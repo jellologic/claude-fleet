@@ -1,5 +1,7 @@
 # claude-fleet
 
+<p align="center"><img src="assets/banner.svg" alt="claude-fleet — run many parallel Claude Code agents on one repo, without conflicts" width="100%"></p>
+
 > Run **many parallel [Claude Code](https://claude.com/claude-code) agents** on one git repo — without conflicts.
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -101,6 +103,9 @@ Extracted from a production monorepo, where it was stress- and chaos-tested: sam
 Found a bug or have an improvement? See **[SELF-REPORT.md](SELF-REPORT.md)** — the protocol every
 script points to: understand the issue → check existing issues → open one with a repro + root cause
 → propose a fix. (AI agents must get human approval before any outward action.)
+
+## Changelog
+See **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## License
 [MIT](LICENSE) © 2026 jellologic
