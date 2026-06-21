@@ -94,6 +94,32 @@ understand the issue → check existing issues → file/comment on
 **always with human approval**. This lets a Claude Code agent spelunking the vendored code know
 exactly how to surface a problem upstream instead of silently working around it.
 
+## FAQ
+
+**Can I run multiple Claude Code agents / instances on the same repo at once?**
+Yes — that's the point. Each agent works in its own **git worktree** on its own branch, and the
+branch ref *is* the lock, so two agents (even on two machines) can't grab the same work.
+
+**Won't parallel agents overwrite each other or conflict?**
+No. Disjoint worktrees + an atomic claim lock prevent collisions; an optional file-ownership gate
+rejects overlapping claims at claim time; and a sequential merge gate rolls back any branch that
+doesn't build — so `main` never breaks.
+
+**Does it work with my stack (Rust, Go, Python, Node, TypeScript…)?**
+Yes. The core is pure **shell + python3 + git + gh** — no node/bun required. Your build/test/bootstrap
+commands live in one small `.fleet/config.sh`.
+
+**Does it commit to `main` or force-push anything?**
+Never directly — all work lands via PR. git + Claude Code hooks block `--no-verify`, force-push, and
+writes outside your worktree; a GitHub ruleset is the authoritative wall.
+
+**How is this different from just using `git worktree`?**
+Worktrees give isolation; claude-fleet adds the **lock** (so agents don't claim the same work),
+**crash recovery**, the **merge gate**, and native Claude Code integration (slash commands + CLAUDE.md).
+
+**How do I remove it?**
+`/fleet-uninstall` (or `.fleet/bin/fleet uninstall`) — surgical and non-destructive. It never lives forever in your repo.
+
 ## Pedigree
 Extracted from a production monorepo, where it was stress- and chaos-tested: same-issue races
 (8-way local + 2-host compare-and-swap), a 10-agent end-to-end fleet, 80-way ledger concurrency,
