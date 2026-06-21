@@ -43,6 +43,7 @@ fi
 rm -f "$ROOT/.claude/hooks/claude-worktree-guard.py" "$ROOT/.claude/hooks/claude-coord-guard.py" \
       "$ROOT/.claude/hooks/coord-session-start.sh" \
       "$ROOT/.claude/commands/claim.md" "$ROOT/.claude/commands/release.md" \
+      "$ROOT/.claude/commands/fleet-update.md" "$ROOT/.claude/commands/fleet-uninstall.md" \
       "$ROOT/.claude/agent-claims.template.json" "$ROOT/.claude/agent-claims.schema.json" \
       "$ROOT/.claude/agent-claims.json"
 rmdir "$ROOT/.claude/hooks" "$ROOT/.claude/commands" 2>/dev/null || true

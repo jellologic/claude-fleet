@@ -16,7 +16,9 @@ echo "Installing claude-fleet into $TARGET"
 # 1) .fleet/ — lib, bin, githooks, removal tooling, self-report doc. Preserve config.sh.
 mkdir -p "$TARGET/.fleet"
 cp -R "$SRC/fleet/lib" "$SRC/fleet/bin" "$SRC/fleet/githooks" "$TARGET/.fleet/"
-cp "$HERE/uninstall.sh" "$HERE/unmerge-settings.py" "$HERE/SELF-REPORT.md" "$TARGET/.fleet/"
+cp "$HERE/uninstall.sh" "$HERE/unmerge-settings.py" "$HERE/SELF-REPORT.md" \
+   "$HERE/INSTALL.md" "$HERE/UPDATE.md" "$HERE/UNINSTALL.md" \
+   "$SRC/templates/CLAUDE.fleet.md" "$TARGET/.fleet/"
 chmod +x "$TARGET/.fleet/bin/"* "$TARGET/.fleet/githooks/"* "$TARGET/.fleet/uninstall.sh" 2>/dev/null || true
 if [ ! -f "$TARGET/.fleet/config.sh" ]; then
   cp "$SRC/fleet/config.sh.example" "$TARGET/.fleet/config.sh"
@@ -52,26 +54,25 @@ if ! grep -q '# >>> claude-fleet (managed) >>>' "$TARGET/.gitignore"; then
   } >> "$TARGET/.gitignore"
 fi
 
-# 6) CLAUDE.md — managed marker block.
-if ! grep -q '<!-- >>> claude-fleet (managed) >>> -->' "$TARGET/CLAUDE.md" 2>/dev/null; then
-  {
-    echo "<!-- >>> claude-fleet (managed) >>> -->"
-    cat "$SRC/templates/CLAUDE.fleet.md"
-    echo "<!-- <<< claude-fleet (managed) <<< -->"
-  } >> "$TARGET/CLAUDE.md"
-  echo "  appended fleet section to CLAUDE.md"
-fi
+# 6) CLAUDE.md is intentionally NOT modified by this script. It is authored by
+#    Claude Code, tailored to this repo, inside `claude-fleet (managed)` markers —
+#    see .fleet/INSTALL.md step 3. (Uninstall still strips that managed block.)
 
 # 7) Wire the git hooks.
 ( cd "$TARGET" && sh .fleet/bin/install-hooks.sh )
 
 cat <<EOF
 
-claude-fleet installed. Next:
-  1. Edit $TARGET/.fleet/config.sh  → set fleet_bootstrap + fleet_gate (see $HERE/examples/)
-  2. gh label create agent-ready; gh label create agent-working
-  3. Commit the .fleet/ + .claude/ files to main (and push)
-  4. .fleet/bin/fleet ruleset      # protect main
-  5. .fleet/bin/fleet claim <issue>
-To remove later:  .fleet/bin/fleet uninstall   (clean, surgical reverse)
+claude-fleet machinery vendored. This script is the ENGINE — drive the lifecycle
+through Claude Code so config + CLAUDE.md get TAILORED to this repo:
+  • Install/finish:  ask Claude Code to follow .fleet/INSTALL.md  (tailors .fleet/config.sh,
+    AUTHORS the CLAUDE.md managed section, sets labels, verifies). CLAUDE.md was NOT touched here.
+  • Update:          /fleet-update      (or follow .fleet/UPDATE.md)
+  • Uninstall:       /fleet-uninstall   (or .fleet/bin/fleet uninstall — clean, surgical)
+
+If you are NOT using Claude Code, do step-by-step manually:
+  1. Edit .fleet/config.sh (fleet_bootstrap + fleet_gate; see $HERE/examples/)
+  2. Add a CLAUDE.md section from .fleet/CLAUDE.fleet.md inside <!-- >>> claude-fleet (managed) >>> --> markers
+  3. gh label create agent-ready; gh label create agent-working
+  4. commit .fleet/ + .claude/ to main; .fleet/bin/fleet ruleset; .fleet/bin/fleet claim <issue>
 EOF

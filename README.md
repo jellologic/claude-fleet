@@ -27,20 +27,27 @@ and a merge-time build gate close the rest.
 `bash`/`sh`, `git`, `python3` (guards + ownership gate), and `gh` (issue-driven claiming).
 No node/bun required by the core.
 
-## Install
-```sh
-git clone https://github.com/jellologic/claude-fleet
-./claude-fleet/install.sh /path/to/your/repo
-```
-Then, in your repo:
-1. Edit **`.fleet/config.sh`** → set `fleet_bootstrap` (provision a worktree) and
-   `fleet_gate` (the integration build/test). See [`examples/`](examples/).
-2. `gh label create agent-ready && gh label create agent-working`
-3. Commit `.fleet/` + `.claude/` to `main` and push.
-4. `.fleet/bin/fleet ruleset` to protect `main`.
+## Install — drive it through Claude Code
+The lifecycle (install / update / uninstall) runs **through Claude Code**, so `.fleet/config.sh`
+and `CLAUDE.md` get *tailored to your repo*: Claude reads your existing `CLAUDE.md` and writes a
+fitting section — it never blindly pastes a canned block.
 
-`install.sh` is idempotent (re-run to update) and non-destructive (merges `settings.json`,
-appends `.gitignore`/`CLAUDE.md`, preserves your `config.sh`).
+```sh
+git clone https://github.com/jellologic/claude-fleet ~/dev/claude-fleet
+```
+Then open **Claude Code in your target repo** and ask it to install:
+> "Install claude-fleet from ~/dev/claude-fleet — follow its INSTALL.md."
+
+Claude then: vendors the machinery (`bash ~/dev/claude-fleet/install.sh .`), tailors `.fleet/config.sh`
+to your stack, **authors** a `CLAUDE.md` section (inside `claude-fleet (managed)` markers), creates the
+labels, verifies, and holds commit / push / `ruleset` for your approval.
+
+After install, Claude natively knows the tool — through the `CLAUDE.md` section **and** the slash
+commands `/claim`, `/release`, `/fleet-update`, `/fleet-uninstall`.
+
+> **Engine, not magic.** `install.sh` only vendors files — idempotent, non-destructive (merges
+> `settings.json`, adds marker blocks, preserves `config.sh`, and leaves `CLAUDE.md` to Claude). You
+> *can* run it standalone for CI/advanced use, then do the `config.sh` + `CLAUDE.md` steps it prints.
 
 ## Configure (per-repo `.fleet/config.sh`)
 Two functions are the only stack-specific bits:
@@ -56,10 +63,12 @@ Plus optional vars: `FLEET_MAIN`, `FLEET_LOCKFILE`, `FLEET_GENERATED_RE`, `FLEET
 WORKTREES.md  .worktreeinclude
 ```
 
-## Remove it (clean, no leftovers)
-claude-fleet is designed to evict cleanly — it never lives forever in a repo:
-```sh
-.fleet/bin/fleet uninstall          # surgical reverse of install (--force to also drop active worktrees)
+## Remove / update it (clean, no leftovers)
+claude-fleet is designed to evict cleanly — it never lives forever in a repo. Drive both through
+Claude Code so the `CLAUDE.md` section and config are handled too:
+```
+/fleet-uninstall      # (or: .fleet/bin/fleet uninstall)  — surgical reverse of install
+/fleet-update [path]  # re-vendor a newer claude-fleet, preserving config.sh + CLAUDE.md
 ```
 It removes `.fleet/`, the fleet-only `.claude/` files, **unmerges only its own hooks** from
 `settings.json`, strips the managed marker blocks from `.gitignore`/`CLAUDE.md`, and unsets
