@@ -4,6 +4,8 @@ All notable changes to claude-fleet are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- Demo GIF in the README, rendered from `assets/demo.tape` (charmbracelet/vhs) via `assets/demo-setup.sh`. (#11)
 
 ## [0.1.1] — 2026-06-21
 ### Added

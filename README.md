@@ -16,6 +16,9 @@ Stack-agnostic: the core is pure **shell + python3 + git + gh** (no node/bun); y
 toolchain specifics live in one small per-repo `config.sh`. Install, update, and remove are all
 driven through Claude Code itself.
 
+## Demo
+![claude-fleet demo — parallel worktrees, protected main, reviewed PRs](assets/demo.gif)
+
 ## Why
 The git branch ref **is** the lock. Claiming work = `git worktree add` (local mutex)
 + `git push` of `agent/issue-<N>` (server-side compare-and-swap). Two agents — even on
