@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Reclaim crashed/abandoned claims. ORPHAN (no PR) reaped by default — clean ones
 # also drop their remote ref so the issue is re-claimable; ORPHAN+WORK kept unless
 # --force; STALE (idle PR > --stale h) reaped in stale mode; LIVE kept.

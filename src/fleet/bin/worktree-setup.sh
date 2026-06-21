@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Create a worktree holding <branch> (the LOCAL lock). Serializes the actual
 # `git worktree add` to avoid the concurrent .git/config race.
 set -euo pipefail

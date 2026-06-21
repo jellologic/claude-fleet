@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # SessionStart hook — orient every agent with the rules + current claims.
 # Plain stdout is injected into context. Always exits 0 (non-blocking).
 ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}"

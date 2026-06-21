@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # claude-fleet coordination library — sourced by the bin/ scripts.
 # Stack-agnostic: locks, ledger, repo-root resolution, config loading.
 

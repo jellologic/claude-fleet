@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Release a claimed issue: close draft PR, remove worktree, delete local branch,
 # drop ledger + ownership entries, relabel agent-ready. Remote kept unless --delete-remote.
 set -euo pipefail

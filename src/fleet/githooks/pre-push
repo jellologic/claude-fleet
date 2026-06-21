@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # claude-fleet pre-push — block direct push to protected refs + non-fast-forward.
 # Executed by git via /bin/sh (POSIX). Bypassable with --no-verify; the GitHub
 # ruleset is the authoritative wall.

@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Wire the committed git hooks via core.hooksPath. Run once per clone (also done
 # by install.sh). core.hooksPath is shared by a clone and all its worktrees.
 set -eu

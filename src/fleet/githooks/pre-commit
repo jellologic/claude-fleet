@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # claude-fleet pre-commit — config-driven. Executed by git via /bin/sh (POSIX).
 # Fast local feedback; bypassable with --no-verify (the coord-guard hook + the
 # GitHub ruleset are the harder controls). Reads .fleet/config.sh if present.

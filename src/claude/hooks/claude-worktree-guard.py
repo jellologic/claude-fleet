@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 """PreToolUse guard — confine an agent's writes to its worktree and block writes
 to secrets/system paths. Wired via .claude/settings.json. Block = exit 2 + reason.
 Fails OPEN on internal errors; fails CLOSED on protected secret/system paths.

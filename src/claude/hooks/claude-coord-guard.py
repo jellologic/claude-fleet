@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 """PreToolUse Bash coord-guard — deny git operations that bypass the fleet controls
 at the TOOL layer (before git runs), closing the --no-verify hole. Denies (only
 when 'git' is in the command): --no-verify; push to main/master/release/*;

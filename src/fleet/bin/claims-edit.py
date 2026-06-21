@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 """Add/remove a claim in the ownership manifest. Idempotent. Pure Python3.
   claims-edit.py <manifest> add <agentId> <branch> <globsCSV>
   claims-edit.py <manifest> remove <agentId>

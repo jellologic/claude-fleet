@@ -56,6 +56,23 @@ Plus optional vars: `FLEET_MAIN`, `FLEET_LOCKFILE`, `FLEET_GENERATED_RE`, `FLEET
 WORKTREES.md  .worktreeinclude
 ```
 
+## Remove it (clean, no leftovers)
+claude-fleet is designed to evict cleanly — it never lives forever in a repo:
+```sh
+.fleet/bin/fleet uninstall          # surgical reverse of install (--force to also drop active worktrees)
+```
+It removes `.fleet/`, the fleet-only `.claude/` files, **unmerges only its own hooks** from
+`settings.json`, strips the managed marker blocks from `.gitignore`/`CLAUDE.md`, and unsets
+`core.hooksPath` (only if it's ours). Your own settings, hooks, and ignores are left untouched.
+Then review `git status` and commit.
+
+## Found a bug?
+Every script carries a one-line **self-report** header pointing to [`SELF-REPORT.md`](SELF-REPORT.md):
+understand the issue → check existing issues → file/comment on
+[github.com/jellologic/claude-fleet](https://github.com/jellologic/claude-fleet) → propose a fix —
+**always with human approval**. This lets a Claude Code agent spelunking the vendored code know
+exactly how to surface a problem upstream instead of silently working around it.
+
 ## Pedigree
 Extracted from `shippostrepo`, where it was stress- and chaos-tested: same-issue races
 (8-way local + 2-host CAS), 10-agent end-to-end fleet, 80-way ledger concurrency,

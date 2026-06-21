@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Create/UPDATE the authoritative protect-main GitHub ruleset (idempotent).
 # Solo-safe: PR-only, no force-push, no deletion, linear history, admin break-glass.
 # No required reviews/checks by default (add when a 2nd reviewer + CI exist).

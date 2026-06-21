@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Sequentially merge agent branches into an integration branch, gating EACH merge
 # with fleet_gate (scoped via fleet_pkg_for) and rolling back any branch that
 # conflicts or fails. Run from a worktree on <integration-branch>. Never pushes.

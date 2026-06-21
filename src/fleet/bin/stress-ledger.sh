@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Regression guard for the WORKTREES.md write-mutex: N concurrent ledger_add must
 # not lose rows. Non-destructive (backs up + restores). Exits non-zero on loss.
 set -euo pipefail

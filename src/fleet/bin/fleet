@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # claude-fleet dispatcher. Run: .fleet/bin/fleet <command> [args]
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -13,6 +14,7 @@ case "$cmd" in
   install-hooks) exec "$HERE/install-hooks.sh" "$@" ;;
   ruleset)       exec "$HERE/setup-main-ruleset.sh" "$@" ;;
   stress-ledger) exec "$HERE/stress-ledger.sh" "$@" ;;
+  uninstall)     exec sh "$HERE/../uninstall.sh" "$@" ;;
   ""|-h|--help)
     cat <<EOF
 claude-fleet — parallel Claude Code agent coordination
@@ -25,6 +27,7 @@ usage: fleet <command> [args]
   check [manifest]         validate the ownership manifest (disjoint claims)
   install-hooks            wire .githooks via core.hooksPath
   ruleset [owner/repo]     create the protect-main GitHub ruleset
+  uninstall [--force]      cleanly remove claude-fleet from this repo
 EOF
     ;;
   *) echo "unknown command: $cmd (try: fleet --help)" >&2; exit 2 ;;

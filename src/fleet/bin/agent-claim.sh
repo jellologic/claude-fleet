@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Atomically claim a GitHub issue. Lock = branch ref `agent/issue-<N>`
 # (local worktree mutex + remote push compare-and-swap). Optional ownership gate
 # via FLEET_CLAIM_OWNS. Stack-agnostic (provisioning via fleet_bootstrap).

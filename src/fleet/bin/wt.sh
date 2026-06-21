@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
 # Worktree helper. Stack-agnostic: provisioning is delegated to fleet_bootstrap.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
