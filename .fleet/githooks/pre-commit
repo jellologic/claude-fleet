@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# claude-fleet -- bug in this file? SELF-REPORT before fixing: understand it, check/file issues at github.com/jellologic/claude-fleet, then propose a fix. ALL outward actions (issue/comment/push) need HUMAN APPROVAL. See SELF-REPORT.md
+# claude-fleet pre-commit — config-driven. Executed by git via /bin/sh (POSIX).
+# Fast local feedback; bypassable with --no-verify (the coord-guard hook + the
+# GitHub ruleset are the harder controls). Reads .fleet/config.sh if present.
+set -eu
+ROOT="$(git rev-parse --show-toplevel)"
+FLEET_PROTECTED_RE='^(main|master|release/.*)$'
+FLEET_BRANCH_RE='^(agent|worktree|pr|lockfile|chore|feat|feature|fix)[/-]'
+FLEET_LOCK_BRANCH_RE='^(lockfile|chore)[/-]'
+FLEET_LOCKFILE=''
+FLEET_GENERATED_RE=''
+[ -f "$ROOT/.fleet/config.sh" ] && . "$ROOT/.fleet/config.sh"
+
+branch=$(git symbolic-ref --short -q HEAD || echo "")
+[ -z "$branch" ] && { echo "BLOCKED: commit on detached HEAD; create a branch first." >&2; exit 1; }
+
+if printf '%s' "$branch" | grep -Eq "$FLEET_PROTECTED_RE"; then
+  echo "BLOCKED: direct commit to '$branch'. Work on a feature/agent branch and open a PR." >&2; exit 1
+fi
+# Allow configured prefixes AND native Claude worktree branches (worktree-*, pr-*).
+if ! printf '%s' "$branch" | grep -Eq "$FLEET_BRANCH_RE|^(worktree-|pr-)"; then
+  echo "BLOCKED: branch '$branch' violates naming policy ($FLEET_BRANCH_RE)." >&2; exit 1
+fi
+dupes=$(git worktree list --porcelain | awk '/^branch /{sub(/^refs\/heads\//,"",$2);print $2}' | sort | uniq -d || true)
+[ -n "$dupes" ] && { echo "BLOCKED: branch(es) checked out in multiple worktrees: $dupes" >&2; exit 1; }
+
+staged=$(git diff --cached --name-only)
+if [ -n "$FLEET_LOCKFILE" ] && printf '%s\n' "$staged" | grep -qx "$FLEET_LOCKFILE"; then
+  if ! printf '%s' "$branch" | grep -Eq "$FLEET_LOCK_BRANCH_RE"; then
+    echo "BLOCKED: $FLEET_LOCKFILE changed on '$branch'. Dependency changes go through a lockfile/* branch." >&2; exit 1
+  fi
+fi
+if [ -n "$FLEET_GENERATED_RE" ] && printf '%s\n' "$staged" | grep -Eq "$FLEET_GENERATED_RE"; then
+  echo "BLOCKED: a generated file ($FLEET_GENERATED_RE) was staged — it must not be committed." >&2; exit 1
+fi
+exit 0

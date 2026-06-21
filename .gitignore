@@ -1,3 +1,10 @@
 .DS_Store
 *.log
 /tmp/
+# >>> claude-fleet (managed) >>>
+.fleet/worktrees/
+.fleet/locks/
+.claude/worktrees/
+.claude/settings.local.json
+.claude/agent-claims.json
+# <<< claude-fleet (managed) <<<
