@@ -36,12 +36,17 @@ fleet_bootstrap() {
 # --- Integration gate (cwd = integration worktree) ------------------------
 # Receives changed build "units" as positional args (from fleet_pkg_for); empty
 # args means "full tree". Return 0 = pass, non-zero = reject the merge. STACK-SPECIFIC.
+# GOTCHA: if your typecheck depends on generated files (e.g. TanStack routeTree.gen.ts,
+# GraphQL/Prisma codegen), run BUILD before CHECK-TYPES — as two sequential commands, not
+# one `turbo run check-types build` (turbo's arg order is not run order). A merge that ADDS
+# routes/codegen will otherwise typecheck against a stale generated file and false-fail.
 fleet_gate() {
   echo "    WARNING: fleet_gate not configured — treating merge as PASS (no real check)" >&2
   return 0
   # Examples:
-  #   if [ "$#" -eq 0 ]; then bunx turbo run check-types build; else
-  #     local f=""; for u in "$@"; do f="$f --filter=$u"; done; bunx turbo run check-types build $f; fi
+  #   if [ "$#" -eq 0 ]; then bunx turbo run build && bunx turbo run check-types; else
+  #     local f=""; for u in "$@"; do f="$f --filter=$u"; done
+  #     bunx turbo run build $f && bunx turbo run check-types $f; fi
   #   cargo check --workspace && cargo nextest run --workspace
 }
 

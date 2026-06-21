@@ -31,13 +31,14 @@ fleet_pkg_for() {
   esac
 }
 
-# Gate: scoped check-types + build for the changed packages, full workspace otherwise.
+# Gate: build FIRST (regenerates codegen like the TanStack routeTree.gen.ts) so the
+# subsequent typecheck sees current routes; then check-types. Scoped to changed packages.
 fleet_gate() {
   if [ "$#" -eq 0 ]; then
-    bunx turbo run check-types build
+    bunx turbo run build && bunx turbo run check-types
   else
     f=""; for u in "$@"; do f="$f --filter=$u"; done
     # shellcheck disable=SC2086
-    bunx turbo run check-types build $f
+    bunx turbo run build $f && bunx turbo run check-types $f
   fi
 }
