@@ -1,0 +1,7 @@
+# Files Claude Code copies into every new worktree (gitignore syntax).
+# Only files that are BOTH gitignored AND exist are copied. node_modules / build
+# output / generated files are intentionally NOT here — `fleet wt bootstrap` provisions those.
+.env
+.env.*
+**/.env
+**/.env.*

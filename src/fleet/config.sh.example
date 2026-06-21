@@ -1,0 +1,50 @@
+# claude-fleet per-repo config. Copy to .fleet/config.sh and customise.
+# Sourced by the coordination scripts. Everything here is OPTIONAL — sensible
+# defaults apply if you leave it unset. The two functions at the bottom are the
+# only stack-specific bits; the rest of the system is stack-agnostic.
+
+# --- Branch policy --------------------------------------------------------
+# FLEET_MAIN="main"
+# FLEET_PROTECTED_RE='^(main|master|release/.*)$'         # never commit/push here
+# FLEET_BRANCH_RE='^(agent|worktree|pr|lockfile|chore|feat|feature|fix)[/-]'  # allowed prefixes
+# FLEET_LOCK_BRANCH_RE='^(lockfile|chore)[/-]'            # branches allowed to touch the lockfile
+
+# --- Dependency serialization (optional) ----------------------------------
+# Serialize lockfile edits to a single lockfile/* branch, and (in the ownership
+# gate) couple dep-manifest edits to the lockfile. Leave empty to disable.
+# FLEET_LOCKFILE=""              # e.g. bun.lock | Cargo.lock | pnpm-lock.yaml | package-lock.json
+# FLEET_DEP_MANIFEST="**/package.json"   # e.g. **/Cargo.toml
+
+# --- Generated files to keep out of commits (egrep, optional) -------------
+# FLEET_GENERATED_RE=''          # e.g. (^|/)routeTree\.gen\.ts$
+
+# --- Files copied into every fresh worktree -------------------------------
+# FLEET_ENV_FILES=".env .env.local .env.development .env.development.local"
+
+# --- Bootstrap a fresh worktree (cwd = the new worktree root) -------------
+# Provision dependencies / run codegen so the worktree is runnable. STACK-SPECIFIC.
+fleet_bootstrap() {
+  : # no-op by default. Examples:
+  #   bun install                                   # JS
+  #   bun install && ( cd apps/web && bun run gen )  # JS + codegen
+  #   cargo fetch                                    # Rust
+  #   pnpm install --frozen-lockfile                 # pnpm
+}
+
+# --- Integration gate (cwd = integration worktree) ------------------------
+# Receives changed build "units" as positional args (from fleet_pkg_for); empty
+# args means "full tree". Return 0 = pass, non-zero = reject the merge. STACK-SPECIFIC.
+fleet_gate() {
+  echo "    WARNING: fleet_gate not configured — treating merge as PASS (no real check)" >&2
+  return 0
+  # Examples:
+  #   if [ "$#" -eq 0 ]; then bunx turbo run check-types build; else
+  #     local f=""; for u in "$@"; do f="$f --filter=$u"; done; bunx turbo run check-types build $f; fi
+  #   cargo check --workspace && cargo nextest run --workspace
+}
+
+# --- Map a changed file to a build unit for SCOPED gating (optional) ------
+# Echo a unit name, or "" to force a full-tree gate. Default: always full.
+fleet_pkg_for() {
+  echo ""   # e.g. case "$1" in crates/*/*) echo "$(echo "$1"|cut -d/ -f2)";; *) echo "";; esac
+}

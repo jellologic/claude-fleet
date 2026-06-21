@@ -1,0 +1,16 @@
+{
+  "$schema": "./agent-claims.schema.json",
+  "_comment": "Live ownership manifest (gitignored copy at .claude/agent-claims.json). Customise hotFiles/forbidden for your repo.",
+  "branchPattern": "^(agent|worktree|pr|lockfile|chore|feat|feature|fix)[/-][a-z0-9][a-z0-9._/-]*$",
+  "hotFiles": [
+    "package.json", "Cargo.toml", "go.mod", "pyproject.toml",
+    "bun.lock", "Cargo.lock", "pnpm-lock.yaml", "package-lock.json",
+    "tsconfig.json"
+  ],
+  "forbidden": [
+    "**/node_modules/**", "**/dist/**", "**/target/**", "**/build/**",
+    "**/.turbo/**", "**/.output/**", "**/.vercel/**", "**/.next/**",
+    "**/*.tsbuildinfo", "**/*.gen.ts", "**/*.gen.go"
+  ],
+  "claims": []
+}

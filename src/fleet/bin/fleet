@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# claude-fleet dispatcher. Run: .fleet/bin/fleet <command> [args]
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cmd="${1:-}"; [ $# -gt 0 ] && shift || true
+case "$cmd" in
+  claim)         exec "$HERE/agent-claim.sh" "$@" ;;
+  release)       exec "$HERE/agent-release.sh" "$@" ;;
+  reap|reaper)   exec "$HERE/agent-reaper.sh" "$@" ;;
+  wt)            exec "$HERE/wt.sh" "$@" ;;
+  integrate)     exec "$HERE/fleet-integrate.sh" "$@" ;;
+  check)         exec python3 "$HERE/check-claims.py" "$@" ;;
+  install-hooks) exec "$HERE/install-hooks.sh" "$@" ;;
+  ruleset)       exec "$HERE/setup-main-ruleset.sh" "$@" ;;
+  stress-ledger) exec "$HERE/stress-ledger.sh" "$@" ;;
+  ""|-h|--help)
+    cat <<EOF
+claude-fleet — parallel Claude Code agent coordination
+usage: fleet <command> [args]
+  claim <issue>            atomically claim an issue (branch-ref lock + draft PR)
+  release <issue> [--delete-remote]
+  reap [--stale H|--force|--delete-remote|--dry-run]   reclaim crashed/abandoned claims
+  wt {new <task>|bootstrap|rebase|reap <name>|list|prune}
+  integrate <integ-branch> <branch>...   sequential merge + gate + rollback
+  check [manifest]         validate the ownership manifest (disjoint claims)
+  install-hooks            wire .githooks via core.hooksPath
+  ruleset [owner/repo]     create the protect-main GitHub ruleset
+EOF
+    ;;
+  *) echo "unknown command: $cmd (try: fleet --help)" >&2; exit 2 ;;
+esac

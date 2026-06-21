@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+# claude-fleet pre-push — block direct push to protected refs + non-fast-forward.
+# Executed by git via /bin/sh (POSIX). Bypassable with --no-verify; the GitHub
+# ruleset is the authoritative wall.
+set -eu
+zero='0000000000000000000000000000000000000000'
+status=0
+while read -r lref lsha rref rsha; do
+  [ -z "${rref:-}" ] && continue
+  case "$rref" in
+    refs/heads/main|refs/heads/master|refs/heads/release/*)
+      echo "BLOCKED: direct push to $rref is forbidden. Open a PR from your branch." >&2; status=1; continue ;;
+  esac
+  [ "$lsha" = "$zero" ] && continue
+  case "$rref" in
+    refs/heads/*)
+      if [ "$rsha" != "$zero" ]; then
+        if ! git merge-base --is-ancestor "$rsha" "$lsha" 2>/dev/null; then
+          echo "BLOCKED: non-fast-forward push to $rref. Rebase: git fetch origin && git rebase origin/${rref#refs/heads/}" >&2
+          status=1
+        fi
+      fi ;;
+  esac
+done
+exit $status

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "claude-fleet agent file-ownership claims",
+  "type": "object",
+  "required": ["claims"],
+  "properties": {
+    "branchPattern": { "type": "string" },
+    "hotFiles": { "type": "array", "items": { "type": "string" } },
+    "forbidden": { "type": "array", "items": { "type": "string" } },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["agentId", "branch", "status", "globs"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "branch": { "type": "string" },
+          "status": { "enum": ["claimed", "in-progress", "merged", "abandoned"] },
+          "globs": { "type": "array", "items": { "type": "string" } },
+          "newFiles": { "type": "array", "items": { "type": "string" } },
+          "hotFilesRequested": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}
