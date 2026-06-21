@@ -4,10 +4,14 @@ All notable changes to claude-fleet are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.1.1] — 2026-06-21
 ### Added
 - `fleet done <issue>` — post-merge cleanup that removes the worktree, force-deletes the
   verified-merged local branch, drops ledger + ownership-manifest entries, and clears the
   `agent-working` label **without** relabeling `agent-ready` (use `fleet release` to abandon). (#7)
+- `/fleet-done` slash command (parity with `/claim`, `/release`). (#9)
+- `CONTRIBUTING.md` and a README **FAQ** (discoverability / onboarding).
 
 ## [0.1.0] — 2026-06-21
 Initial public release.
@@ -30,5 +34,6 @@ Initial public release.
 - **Self-report protocol** (`SELF-REPORT.md`) referenced from every script.
 - MIT license.
 
-[Unreleased]: https://github.com/jellologic/claude-fleet/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jellologic/claude-fleet/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/jellologic/claude-fleet/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jellologic/claude-fleet/releases/tag/v0.1.0
