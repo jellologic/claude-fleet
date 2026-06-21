@@ -4,6 +4,10 @@ All notable changes to claude-fleet are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- `fleet done <issue>` — post-merge cleanup that removes the worktree, force-deletes the
+  verified-merged local branch, drops ledger + ownership-manifest entries, and clears the
+  `agent-working` label **without** relabeling `agent-ready` (use `fleet release` to abandon). (#7)
 
 ## [0.1.0] — 2026-06-21
 Initial public release.

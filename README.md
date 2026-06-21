@@ -25,7 +25,8 @@ and a merge-time build gate close the rest.
 ## What you get
 | Tool | Purpose |
 |------|---------|
-| `fleet claim <issue>` / `release` | atomic issue claim (lock + worktree + draft PR + labels + ledger) |
+| `fleet claim <issue>` / `release` | atomic issue claim (lock + worktree + draft PR + labels + ledger); `release` abandons |
+| `fleet done <issue>` | post-merge cleanup — worktree + branch + claim, issue stays closed |
 | `fleet wt {new,bootstrap,rebase,reap,…}` | worktree lifecycle |
 | `fleet integrate <branch> <branches…>` | sequential merge + per-merge gate + rollback |
 | `fleet reap [--stale H\|--force]` | reclaim crashed/abandoned claims |
