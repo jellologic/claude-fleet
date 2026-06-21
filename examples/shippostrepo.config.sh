@@ -10,6 +10,9 @@ FLEET_GENERATED_RE='(^|/)routeTree\.gen\.ts$'
 # short-lived dev server (the @tanstack/react-start plugin emits routeTree.gen.ts).
 fleet_bootstrap() {
   bun install
+  # bun can report "no changes" and skip materializing node_modules in a FRESH worktree;
+  # force a real install if it didn't land, so typecheck/build have their deps.
+  [ -d node_modules ] || bun install --force
   ( cd apps/web && {
       bun run dev >/dev/null 2>&1 &
       p=$!; i=0

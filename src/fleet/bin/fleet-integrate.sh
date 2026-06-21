@@ -12,6 +12,7 @@ shift
 [ "$#" -gt 0 ] || { echo "no branches to merge" >&2; exit 2; }
 cur="$(git branch --show-current)"
 [ "$cur" = "$INTEG" ] || { echo "error: run from a worktree on '$INTEG' (currently on '$cur')" >&2; exit 2; }
+INTEG_BASE="$(git rev-parse HEAD)"   # integration tip BEFORE any merge — used to scope the FINAL gate
 
 gate() {
   local files="$1" units="" full=0 u
@@ -43,7 +44,7 @@ for BR in "$@"; do
 done
 rm -f /tmp/fi-merge.$$
 echo "==================================================================="
-if [ "${SKIP_FINAL:-0}" = 1 ]; then echo "FINAL gate: SKIPPED"; else echo "FINAL gate on integrated result:"; if gate ""; then echo "  FINAL: PASS"; else echo "  FINAL: FAIL"; fi; fi
+if [ "${SKIP_FINAL:-0}" = 1 ]; then echo "FINAL gate: SKIPPED"; else echo "FINAL gate on integrated result (scoped to changed packages):"; if gate "$(git diff --name-only "$INTEG_BASE..HEAD" 2>/dev/null)"; then echo "  FINAL: PASS"; else echo "  FINAL: FAIL"; fi; fi
 echo "==================================================================="
 echo "INTEGRATION SUMMARY"
 echo "  merged clean (${#PASS[@]}): ${PASS[*]:-none}"
