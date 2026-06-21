@@ -29,6 +29,8 @@ fleet_bootstrap() {
   #   bun install && ( cd apps/web && bun run gen )  # JS + codegen
   #   cargo fetch                                    # Rust
   #   pnpm install --frozen-lockfile                 # pnpm
+  # GOTCHA: in a fresh worktree, `bun install` may print "no changes" and NOT create
+  # node_modules. Guard it:  bun install; [ -d node_modules ] || bun install --force
 }
 
 # --- Integration gate (cwd = integration worktree) ------------------------
