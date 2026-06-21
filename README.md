@@ -1,9 +1,18 @@
 # claude-fleet
 
-Drop-in coordination for running **many Claude Code agents in parallel** on one git
-repo without conflicts — branch-ref locks, git worktrees, crash recovery, a merge
-gate, and tool-layer guards. Stack-agnostic: the core is pure **shell + python3 + git
-+ gh**; language/toolchain specifics live in a small per-repo `config.sh`.
+> Run **many parallel [Claude Code](https://claude.com/claude-code) agents** on one git repo — without conflicts.
+
+![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![runtime: bash + python3](https://img.shields.io/badge/runtime-bash%20%2B%20python3-success)
+![stack-agnostic](https://img.shields.io/badge/stack-agnostic-orange)
+![for: Claude Code](https://img.shields.io/badge/for-Claude%20Code-8A2BE2)
+
+Coordinate a **fleet of parallel AI coding agents** with **git-worktree branch-ref locks**,
+**crash recovery**, a **sequential merge gate**, and **tool-layer guard hooks** — so two agents
+never touch the same work, broken branches never reach `main`, and a dead agent never holds a lock.
+Stack-agnostic: the core is pure **shell + python3 + git + gh** (no node/bun); your language and
+toolchain specifics live in one small per-repo `config.sh`. Install, update, and remove are all
+driven through Claude Code itself.
 
 ## Why
 The git branch ref **is** the lock. Claiming work = `git worktree add` (local mutex)
@@ -83,7 +92,15 @@ understand the issue → check existing issues → file/comment on
 exactly how to surface a problem upstream instead of silently working around it.
 
 ## Pedigree
-Extracted from `shippostrepo`, where it was stress- and chaos-tested: same-issue races
-(8-way local + 2-host CAS), 10-agent end-to-end fleet, 80-way ledger concurrency,
-25 concurrent worktree creations, `kill -9` mid-claim (no corruption, self-heal),
-and an 11-case ownership-gate / reaper suite.
+Extracted from a production monorepo, where it was stress- and chaos-tested: same-issue races
+(8-way local + 2-host compare-and-swap), a 10-agent end-to-end fleet, 80-way ledger concurrency,
+25 concurrent worktree creations, `kill -9` mid-claim (no corruption, full self-heal), and an
+11-case ownership-gate / reaper suite.
+
+## Contributing
+Found a bug or have an improvement? See **[SELF-REPORT.md](SELF-REPORT.md)** — the protocol every
+script points to: understand the issue → check existing issues → open one with a repro + root cause
+→ propose a fix. (AI agents must get human approval before any outward action.)
+
+## License
+[MIT](LICENSE) © 2026 jellologic
