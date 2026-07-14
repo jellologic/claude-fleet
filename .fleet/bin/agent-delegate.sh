@@ -63,6 +63,12 @@ EOF
 # ── worktree resolution ───────────────────────────────────────────────────────────────
 ROOT="$(repo_root)" || die "not inside a git repository"
 
+# NOTE: callers MUST invoke this as `wt="$(resolve_wt "$x")" || exit 1`.
+# `die` here runs inside the caller's command substitution — i.e. in a SUBSHELL — so it
+# can only exit that subshell. This script deliberately does not `set -e` (the worker's
+# non-zero exits are handled explicitly), which means a bare `wt="$(resolve_wt bogus)"`
+# would print the error, assign an EMPTY string, and sail on to build a sandbox profile
+# with an empty confinement path. Fail closed: check the status at every call site.
 resolve_wt() {  # $1 = path or name → absolute, physical path
   local a="$1" p
   case "$a" in
@@ -327,7 +333,7 @@ delegate_once() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$cmd" in
   delegate)
-    wt="$(resolve_wt "${1:?usage: fleet delegate delegate <worktree> \"<task>\"}")"; shift
+    wt="$(resolve_wt "${1:?usage: fleet delegate delegate <worktree> \"<task>\"}")" || exit 1; shift
     task="${1:?usage: fleet delegate delegate <worktree> \"<task>\"}"
     echo "delegate → $wt"
     delegate_once "$wt" "$task" || die "worker failed"
@@ -335,7 +341,7 @@ case "$cmd" in
     ;;
 
   feedback)
-    wt="$(resolve_wt "${1:?usage: fleet delegate feedback <worktree> \"<fix…>\"}")"; shift
+    wt="$(resolve_wt "${1:?usage: fleet delegate feedback <worktree> \"<fix…>\"}")" || exit 1; shift
     fix="${1:?usage: fleet delegate feedback <worktree> \"<fix…>\"}"
     sd="$(state_dir "$wt")"
     [ -f "$sd/session" ] || die "no delegate session for $wt — run \`fleet delegate delegate\` first"
@@ -346,7 +352,7 @@ case "$cmd" in
     ;;
 
   loop)
-    wt="$(resolve_wt "${1:?usage: fleet delegate loop <worktree> --until '<check>' \"<task>\"}")"; shift
+    wt="$(resolve_wt "${1:?usage: fleet delegate loop <worktree> --until '<check>' \"<task>\"}")" || exit 1; shift
     check=""; max="$FLEET_DELEGATE_MAX_ITERS"; task=""
     while [ $# -gt 0 ]; do case "$1" in
       --until)     check="${2:?--until needs a shell check}"; shift 2 ;;
