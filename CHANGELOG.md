@@ -4,6 +4,15 @@ All notable changes to claude-fleet are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.2.0] — 2026-07-14
+**Delegation, adversarial review, and a hard look at the rails.** `fleet` gains three verbs that let
+you point the fleet *programmatically* — `delegate` (headless OS-sandboxed `claude -p` workers, any
+provider), `review` (N=2 adversarial diff-only reviewers whose findings must ship runnable evidence),
+and `fanout` (parallel units, refused unless provably disjoint). Alongside them, **eight coordination
+and confinement bugs** — several of which could destroy a live agent's work, hand two agents the same
+issue, or let a broken tree reach `main` while reporting success. Every fix ships a mutation-checked
+negative test: it fails against the buggy code and passes against the fix.
 ### Added
 - `tests/negatives/destructive-git.sh` — 20 deny cases, 19 allow cases, mutation-checked both ways (removing the check lets `reset --hard` through; over-firing blocks `git checkout -- src/foo.py`). (#38)
 - **`fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]` — N units, one worktree
@@ -215,6 +224,7 @@ Initial public release.
 - **Self-report protocol** (`SELF-REPORT.md`) referenced from every script.
 - MIT license.
 
-[Unreleased]: https://github.com/jellologic/claude-fleet/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/jellologic/claude-fleet/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jellologic/claude-fleet/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jellologic/claude-fleet/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jellologic/claude-fleet/releases/tag/v0.1.0
