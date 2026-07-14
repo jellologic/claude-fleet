@@ -33,7 +33,7 @@ and a merge-time build gate close the rest.
 | `fleet wt {new,bootstrap,rebase,reap,…}` | worktree lifecycle |
 | `fleet integrate <branch> <branches…>` | sequential merge + per-merge gate + rollback |
 | `fleet reap [--stale H\|--force]` | reclaim crashed/abandoned claims |
-| `fleet delegate {delegate,feedback,loop}` | hand a work-unit to a headless, OS-sandboxed `claude -p` worker |
+| `fleet delegate {delegate,feedback,loop,review}` | hand a work-unit to a headless, OS-sandboxed `claude -p` worker; `review` runs N=2 adversarial diff-only reviewers whose findings must ship a runnable repro/patch (advisory — never blocks) |
 | `fleet check` | validate disjoint file ownership |
 | git hooks | block main commits, branch naming, lockfile serialization, force-push |
 | Claude hooks | confine writes to the worktree, block secrets, deny `--no-verify`/main-push at the tool layer, session primer |
@@ -50,6 +50,7 @@ the **worker** does the labour.
 | `fleet delegate delegate <wt> "<task>"` | run one unit headless in that worktree; capture `session_id` / `result` / cost from `--output-format json` |
 | `fleet delegate feedback <wt> "<fix…>"` | `--resume` that worktree's session — continue **in context**, not from a cold start |
 | `fleet delegate loop <wt> --until '<check>' "<task>"` | **self-heal**: run → run the check → feed its failure back → repeat, bounded by `--max-iters` (default 3). Exit 0 when the check goes green; non-zero (escalate) when it never does. |
+| `fleet delegate review <wt> [--reviewers N] [--base <ref>]` | **N=2 adversarial, diff-only, read-only reviewers.** Every finding must ship a runnable repro or patch; the artifact is *executed* and adjudicated by `fleet_gate`. **Advisory — it never blocks.** |
 
 ```sh
 .fleet/bin/fleet claim 42
@@ -59,6 +60,50 @@ the **worker** does the labour.
 ```
 The `--until` check is **your** oracle and runs unsandboxed in the worktree — correctness is gated
 by the check, not by trusting the worker.
+
+### `review` — reviewers emit **evidence**, the gate returns the **verdicts**
+```sh
+.fleet/bin/fleet delegate review agent/issue-42               # N=2, diff = origin/main...HEAD
+.fleet/bin/fleet delegate review agent/issue-42 --reviewers 3 --base v1.2.0
+```
+Bun ran exactly this loop over a 535k-line Zig→Rust port: *"1 implementer, 2 or more adversarial
+reviewers per implementer. The reviewer's only job: find bugs & reasons why the code does not
+work"*, and each reviewer *"gets the diff and nothing else — none of the implementer's reasoning"*.
+So: **N defaults to 2** (that is Bun's number, not a derived optimum), the input is
+**context-asymmetric** (the diff, never the implementer's session/transcript/rationale — `review`
+never passes a session id and never `--resume`s), and the prompt is **refute-framed**: *find the way
+this diff is WRONG*.
+
+But review was never Bun's *gate* — their oracle was `cargo check` plus a suite with 1,386,826
+assertions. So `review` is built on one rule:
+
+> **Reviewers produce EVIDENCE. `fleet_gate` produces VERDICTS.**
+
+* **Every finding must ship an executable artifact** — a `repro` (a shell command that *fails* on
+  HEAD) or a `patch` (a `git apply`-able diff). A finding with neither is **DISCARDED, not
+  escalated**: "a vague logic error with no falsifiable counterexample" is exactly what oracle-less
+  LLM reviewers over-produce.
+* **The artifact is executed**, in a *throwaway* worktree — never in the worktree under review. A
+  repro that **passes** on HEAD is `REFUTED` (the bug does not reproduce). A patch that does not
+  apply is discarded. A patch that applies but leaves **`fleet_gate`'s outcome unchanged** is
+  `UNSUBSTANTIATED` — this is the *fix-guided verification filter*, the one intervention in the
+  literature with a measured ~3x improvement in false-rejection rate.
+* **`review` never blocks a merge.** It exits **0 whenever it RAN** — findings or no findings.
+  A non-zero exit means the review could not run (no sandbox, no worktree, the reviewer died).
+  `fleet_gate` and the pre-push hook are **the gate**; `review` is advisory evidence you go and
+  verify.
+* **Reviewers are READ-ONLY.** They get a *different* sandbox profile from `delegate` workers: the
+  worktree **and** the shared `.git` are denied, and the only writable place is a per-reviewer
+  scratch dir under `$TMPDIR` where the findings land. A reviewer that can "fix" the diff is no
+  longer an independent observer of it.
+
+**Never let the implementer's own model grade its own diff.** That is the one thing you must not
+do: the errors correlate, and a model is subject to self-preference bias on its own output. Point
+the reviewer at a *different family* — `FLEET_REVIEW_{BASE_URL,MODEL,TOKEN_FILE,TOKEN}`, each
+falling back to its `FLEET_WORKER_*` twin when unset. (`review` warns loudly when the two are
+identical.) Spend budget on **decorrelation**, not on more reviewers: ten reviewers once
+unanimously endorsed an OpenSSL padding oracle that did not exist — they shared a false premise,
+and it took *one* instance that actually compiled the code and ran three tests to kill it.
 
 ### The worker is a separate process — that's the whole trick
 `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` are **global per process**. You *cannot* route one

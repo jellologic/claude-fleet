@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- **`fleet delegate review <wt> [--reviewers N] [--base <ref>]` — adversarial diff-only reviewers
+  that emit EVIDENCE, never verdicts.** N defaults to **2** (Bun ran "1 implementer, 2 or more
+  adversarial reviewers per implementer" over a 535k-line Zig→Rust port). Each reviewer is
+  **context-asymmetric** — it gets `git diff <base>...HEAD` and *nothing else*: no session id, no
+  `--resume`, none of the implementer's reasoning — and its prompt is **refute-framed** ("find the
+  way this diff is WRONG"). Reviewers run under a **different, READ-ONLY sandbox profile** from
+  `delegate` workers: the worktree *and* the shared `.git` are denied, and the only writable path
+  is a per-reviewer scratch dir under `$TMPDIR`. **Every finding must ship an executable artifact**
+  — a `repro` (a shell command that must FAIL on HEAD) or a `patch` (a `git apply`-able diff); a
+  finding with neither is **DISCARDED, not escalated**. Surviving findings are **adjudicated by the
+  REAL gate** in a throwaway worktree: a repro that PASSES on HEAD is REFUTED; a patch that does
+  not apply is discarded; a patch that leaves `fleet_gate`'s outcome unchanged is UNSUBSTANTIATED
+  (the *fix-guided verification filter*). **`review` NEVER BLOCKS a merge** — it exits 0 whenever
+  it RAN, and non-zero only on infrastructure failure. Bun's oracle was `cargo check` + 1.39M test
+  assertions, *not* the reviewers; `fleet_gate` and the pre-push hook are fleet's. New
+  `FLEET_REVIEW_{BASE_URL,MODEL,TOKEN_FILE,TOKEN}` (each falling back to its `FLEET_WORKER_*` twin)
+  let the reviewer be a **different model family** from the implementer — letting a model grade its
+  own diff is the one thing you must not do (self-preference bias), and `review` warns when the two
+  providers are identical. (#36)
+- `tests/negatives/review-evidence.sh` — mutation-checked. Asserts that an artifact-less finding, a
+  repro that passes on HEAD, an unappliable patch, and a patch the real gate cannot see are all
+  DISCARDED; that a repro which genuinely fails on HEAD and a patch that flips `fleet_gate`
+  RED→GREEN survive; that **`review` exits 0 even with substantiated findings**; that a reviewer's
+  writes into the reviewed worktree are EPERM and the worktree is byte-for-byte unchanged; and that
+  the implementer's session id never reaches a reviewer. (#36)
 - Docs: a **rail table** stating exactly what each control binds — the OS sandbox and the GitHub ruleset are load-bearing; the Python guards do **not** bind subprocesses and do **not** survive `--bare`, so they are defence-in-depth only. Plus the standing rules: never launch headless agents with `--bare`, and pin the Claude Code version (re-run `tests/negatives/` on upgrade). (#32)
 - `tests/negatives/guard-exit-codes.sh` — tripwire asserting every guard deny path exits **2**, that no input (including malformed JSON and unterminated quotes) yields the fail-open **exit 1**, and that the deliberate exit-0 fail-open paths stay deliberate. Mutation-checked against both guards. Claude Code treats exit 1 as non-blocking and PROCEEDS, so a deny that exits 1 is silently an ALLOW. (#31)
 - `fleet gate-check` (`check-gate-integrity.sh`) — asserts the pre-push merge gate is still wired: `core.hooksPath` resolves to `.fleet/githooks`, the hook exists **and is executable** (git silently skips a non-executable hook), `extensions.worktreeConfig` is unset, and no `.git/worktrees/*/config.worktree` overrides `hooksPath`. Called by `fleet integrate` before it will merge anything (`FLEET_SKIP_GATE_CHECK=1` to opt out where hooks are managed elsewhere). It cannot live *inside* the hook — a disabled hook does not run. (#30)
