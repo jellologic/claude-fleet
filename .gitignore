@@ -10,6 +10,7 @@ __pycache__/
 .fleet/worktrees/
 .fleet/locks/
 .fleet/delegate/
+.fleet/fanout/
 .claude/worktrees/
 .claude/settings.local.json
 .claude/agent-claims.json

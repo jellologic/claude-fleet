@@ -9,6 +9,7 @@
 #   feedback <wt> "<fix…>"                        --resume that worktree's session, IN CONTEXT
 #   loop     <wt> --until '<check>' "<task>"      run → check → feed the failure back → repeat
 #   review   <wt> [--reviewers N] [--base <ref>]  N adversarial diff-only reviewers → EVIDENCE
+#   fanout   <manifest.json> [--jobs N]           N PROVABLY DISJOINT units, one worktree each
 #
 # ── `review`: reviewers produce EVIDENCE, the gate produces VERDICTS (#36) ─────────────
 # Bun ran exactly this loop over a 535k-line Zig→Rust port (bun.com/blog/bun-in-rust):
@@ -81,8 +82,34 @@ usage: fleet delegate <verb> [args]
                                                      adjudicated by `fleet_gate`. ALWAYS exits
                                                      0 when the review RAN — review is advisory
                                                      EVIDENCE; the GATE is the gate.
+  fanout   <manifest.json> [--jobs N] [--dry-run] [--resume] [--base <ref>]
+                                                     N units, each a `delegate` run in its OWN
+                                                     worktree. REFUSES (exit 2) a manifest whose
+                                                     units' `owns` globs are not PROVABLY DISJOINT
+                                                     — a cap cannot rescue overlapping work, it
+                                                     only makes N agents overwrite each other more
+                                                     slowly. Worktrees are created SERIALLY, the
+                                                     work runs in parallel. Exits non-zero iff a
+                                                     unit failed.
 
 worktree: an absolute path, or a name under .fleet/worktrees/ (e.g. `agent/issue-23`).
+
+fanout manifest (see examples/fanout.example.json + examples/fanout.schema.json):
+  { "units": [ { "id": "parser", "owns": ["src/parser/**"], "task": "…" },
+               { "id": "codegen", "owns": ["src/codegen/**"], "task": "…" } ] }
+  id       [a-z0-9][a-z0-9._-]*  — becomes a branch (agent/fanout/<manifest>/<id>) and a directory
+  owns     the unit's file partition. A bare directory means its whole subtree. PAIRWISE DISJOINT
+           across units, PROVEN by check-claims.py before anything is launched.
+  task     the unit's brief, handed to a headless worker in that unit's worktree.
+  branch   (optional) override the derived branch name.
+
+fanout tuning (both defaults are STARTING POINTS, not measured optima):
+  --jobs N / FLEET_FANOUT_JOBS        default min(cpu/2, 4). The real ceiling Bun hit at ~64 agents
+                                      was DISK and IOPS ("ran out of disk space and crashed"), and
+                                      the one Anthropic hit at 16 was task decomposability. Neither
+                                      was the model. Tune per machine and instrument it.
+  FLEET_FANOUT_DISK_MB_PER_JOB=512    per-worktree estimate for the disk preflight.
+  state: .fleet/fanout/<manifest-slug>/ (gitignored) — per-unit pending/running/done/failed + logs.
 
 worker provider (all optional; unset = inherit the ambient Anthropic default):
   FLEET_WORKER_BASE_URL    → ANTHROPIC_BASE_URL
@@ -642,6 +669,389 @@ review_run() {  # $1 = worktree, $2 = N reviewers, $3 = base ref or ""
   exit 0
 }
 
+# ── fanout: N disjoint units, concurrency-capped, worktrees created SERIALLY (#37) ────
+#
+# TWO WALLS, neither of them the model. `fanout` is designed around both.
+#
+# WALL 1 — parallelism does NOTHING on work that is not genuinely disjoint. Anthropic ran 16
+# agents at compiling the Linux kernel with their C compiler (anthropic.com/engineering/
+# building-c-compiler): "every agent would hit the same bug, fix that bug, and then overwrite
+# each other's changes. Having 16 agents running didn't help because each was stuck solving the
+# same task." A concurrency CAP does not help with that at all — N agents on overlapping work
+# is strictly WORSE than N=1, because they also destroy each other's edits. So disjointness is a
+# PRECONDITION here, PROVEN before anything launches, and a manifest that fails it is REFUSED
+# (exit 2) rather than capped-and-hoped. The prover is `check-claims.py` — fleet's existing
+# ownership gate — driven with a claims manifest synthesised from the fanout units. We do not
+# reimplement glob-overlap logic; there is exactly one such enforcer in this repo and this is it.
+#
+# WALL 2 — the ceiling is DISK and IOPS, not the model. Bun ran ~64 agents over a 535k-line
+# Zig→Rust port (bun.com/blog/bun-in-rust): "The machine ran out of disk space and crashed
+# several times anyway", and "One slow `grep` command was all it took to freeze disk reads &
+# writes for minutes." Hence: a DISK PREFLIGHT before we create a single worktree, `nice` on
+# every worker, `ionice` where it exists (Linux), and a --jobs default derived from CPU count as
+# a conservative PROXY for I/O headroom — explicitly a starting point to tune, not a measured
+# optimum. No source gives a measured per-repo parallel-agent ceiling; Bun's ~64 and Anthropic's
+# 16 are anecdotes from two projects of very different shape.
+#
+# WALL 3 — concurrent `git worktree add` RACES on the shared .git (RFC part 3: firing 16 at once,
+# 4/16 FAILED; created serially, 16/16 succeeded). So worktree creation is SERIAL, and only the
+# WORK is parallel. Concurrent commits from separate worktrees are fine.
+: "${FLEET_FANOUT_DISK_MB_PER_JOB:=512}"   # per-worktree disk estimate for the preflight
+: "${FLEET_FANOUT_JOBS:=}"                 # default: min(cpu/2, 4) — see fanout_default_jobs
+
+die2() { echo "error: $*" >&2; exit 2; }   # 2 = REFUSED at preflight; nothing was launched
+
+# A conservative PROXY for I/O headroom, not a measured optimum. Tune per machine: the real
+# ceiling Bun hit was disk/IOPS, and the one Anthropic hit was task decomposability.
+fanout_default_jobs() {
+  local n
+  n="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
+  case "$n" in ''|*[!0-9]*) n=2 ;; esac
+  n=$((n / 2))
+  [ "$n" -lt 1 ] && n=1
+  [ "$n" -gt 4 ] && n=4
+  echo "$n"
+}
+
+fanout_free_mb() {  # $1 = a path on the filesystem to measure
+  df -Pk "$1" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024}'
+}
+
+fanout_slug() {  # $1 = manifest path → a filesystem/branch-safe slug
+  local b; b="$(basename "$1")"; b="${b%.json}"
+  printf '%s' "$b" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-' \
+    | sed 's/-\{1,\}/-/g; s/^-//; s/-$//'
+}
+
+# `nice`, plus `ionice` where it exists. macOS has NO ionice — `nice` alone is all we get there,
+# and that governs CPU, not IOPS. Say so rather than pretend. On Linux, prefer cgroups
+# (systemd-run --scope -p IOWeight=…) for a real I/O bound; this is the portable floor.
+FANOUT_NICE=""
+fanout_nice_prefix() {
+  FANOUT_NICE="nice -n 10"
+  if command -v ionice >/dev/null 2>&1; then
+    FANOUT_NICE="ionice -c2 -n7 $FANOUT_NICE"
+  fi
+}
+
+# The unit prompt. A fanout worker is told, in so many words, that it owns a partition and that
+# stepping outside it is the failure mode this whole design exists to prevent.
+fanout_prompt() {  # $1 = unit id, $2 = task, $3 = owns (one glob per line)
+  cat <<EOF
+You are ONE unit of a FANOUT. Several headless agents are working in PARALLEL right now, each in
+its own git worktree, on a partition of this repository that has been PROVEN pairwise disjoint
+before any of you were launched.
+
+unit: $1
+
+You OWN — and may ONLY create or modify — files matching:
+$(printf '%s\n' "$3" | sed 's/^/  - /')
+
+Do NOT touch any file outside that set, for any reason: not a "quick fix", not a shared helper,
+not a config file, not a test outside your paths. Another agent owns it and is editing it right
+now; your write would be overwritten, or would overwrite theirs. If your task genuinely cannot be
+done inside your paths, STOP and say so in your final message — that is a manifest bug, and it is
+the correct outcome. Do not widen your own scope.
+
+Commit your work on this worktree's branch when you are done.
+
+TASK:
+$2
+EOF
+}
+
+# Parse + validate the manifest, synthesise the claims manifest, lay out the state dir.
+# Prints nothing on success (the state dir IS the output); exits 2 with a reason on a bad manifest.
+fanout_prepare() {  # $1 = manifest, $2 = claims out, $3 = state dir, $4 = slug, $5 = base ref
+  python3 - "$1" "$2" "$3" "$4" "$5" "$ROOT" <<'PY' || exit 2
+import json, os, re, sys
+
+manifest, claims_out, state, slug, base, root = sys.argv[1:7]
+
+def die(msg):
+    print(f"error: {manifest}: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    with open(manifest) as fh:
+        m = json.load(fh)
+except Exception as e:
+    die(f"cannot read/parse: {e}")
+
+if not isinstance(m, dict):
+    die("top level must be a JSON object")
+units = m.get("units")
+if not isinstance(units, list) or not units:
+    die('"units" must be a non-empty array')
+
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+WILD = re.compile(r"[*?\[\]{}]")
+
+seen, out = set(), []
+for k, u in enumerate(units):
+    if not isinstance(u, dict):
+        die(f"units[{k}] is not an object")
+    uid = u.get("id")
+    if not isinstance(uid, str) or not ID_RE.match(uid):
+        die(f'units[{k}]: "id" must match {ID_RE.pattern} (it becomes a branch and a directory)')
+    if uid in seen:
+        die(f'duplicate unit id "{uid}"')
+    seen.add(uid)
+
+    owns = u.get("owns")
+    if not isinstance(owns, list) or not owns or not all(isinstance(g, str) and g for g in owns):
+        die(f'unit "{uid}": "owns" must be a non-empty array of non-empty strings')
+    norm = []
+    for g in owns:
+        if g.startswith("/") or ".." in g.split("/"):
+            die(f'unit "{uid}": owns entry "{g}" must be a repo-relative path without ".."')
+        # A bare directory means its whole subtree. Spelling it as a glob is what lets the
+        # disjointness prover SEE the nesting — `src/parser` and `src/parser/x.c` look unrelated
+        # to a literal-vs-literal comparison, `src/parser/**` and `src/parser/x.c` do not.
+        if not WILD.search(g) and (g.endswith("/") or os.path.isdir(os.path.join(root, g))):
+            g = g.rstrip("/") + "/**"
+        norm.append(g)
+
+    task = u.get("task")
+    if not isinstance(task, str) or not task.strip():
+        die(f'unit "{uid}": "task" must be a non-empty string')
+
+    branch = u.get("branch") or f"agent/fanout/{slug}/{uid}"
+    if not isinstance(branch, str):
+        die(f'unit "{uid}": "branch" must be a string')
+    out.append({"id": uid, "owns": norm, "task": task, "branch": branch})
+
+# Ownership POLICY (hotFiles / forbidden / branchPattern) comes from the repo's own claims
+# manifest, so a fanout unit cannot own a generated path that a normal claim could not own.
+policy = {}
+for cand in (os.path.join(root, ".claude", "agent-claims.json"),
+             os.path.join(root, ".claude", "agent-claims.template.json")):
+    try:
+        with open(cand) as fh:
+            policy = json.load(fh)
+        break
+    except Exception:
+        continue
+
+claims = {
+    "branchPattern": policy.get(
+        "branchPattern",
+        r"^(agent|worktree|pr|lockfile|chore|feat|feature|fix)[/-][a-z0-9][a-z0-9._/-]*$"),
+    "hotFiles": policy.get("hotFiles", []),
+    "forbidden": policy.get("forbidden", []),
+    "claims": [{
+        "agentId": u["id"],
+        "branch": u["branch"],
+        "status": "claimed",
+        "globs": u["owns"],
+        # Every non-wildcard entry is also declared as a FUTURE file, so check-claims' cross-check
+        # ("future file X inside the other's glob") fires even when the path is not yet tracked.
+        "newFiles": [g for g in u["owns"] if not WILD.search(g)],
+    } for u in out],
+}
+with open(claims_out, "w") as fh:
+    json.dump(claims, fh, indent=2)
+
+os.makedirs(os.path.join(state, "units"), exist_ok=True)
+with open(os.path.join(state, "base"), "w") as fh:
+    fh.write(base + "\n")
+for u in out:
+    d = os.path.join(state, "units", u["id"])
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "task"), "w") as fh:
+        fh.write(u["task"])
+    with open(os.path.join(d, "owns"), "w") as fh:
+        fh.write("\n".join(u["owns"]) + "\n")
+    with open(os.path.join(d, "branch"), "w") as fh:
+        fh.write(u["branch"] + "\n")
+    sf = os.path.join(d, "state")
+    if not os.path.exists(sf):
+        with open(sf, "w") as fh:
+            fh.write("pending\n")
+with open(os.path.join(state, "plan"), "w") as fh:
+    fh.write("\n".join(u["id"] for u in out) + "\n")
+PY
+}
+
+# Run ONE unit to completion inside its worktree. Runs in a background subshell; its ONLY output
+# channel is the state dir, and its last act is to write `rc` — which is what the scheduler counts
+# to decide a slot has freed up.
+fanout_unit() {  # $1 = state dir, $2 = unit id, $3 = worktree
+  local sd="$1" id="$2" wt="$3" d rc=0 task owns
+  d="$sd/units/$id"
+  task="$(cat "$d/task")"
+  owns="$(cat "$d/owns")"
+  printf 'running\n' > "$d/state"
+
+  # nice/ionice govern the WORKER; the sandbox governs its WRITES. Neither bounds IOPS on macOS —
+  # that is a real, documented gap (Bun needed cgroups for it).
+  # shellcheck disable=SC2086
+  ( cd "$wt" && exec $FANOUT_NICE "$HERE/agent-delegate.sh" delegate "$wt" "$(fanout_prompt "$id" "$task" "$owns")" ) \
+    > "$d/log" 2>&1 || rc=$?
+
+  if [ "$rc" -eq 0 ]; then printf 'done\n' > "$d/state"; else printf 'failed\n' > "$d/state"; fi
+  printf '%s\n' "$rc" > "$d/rc"      # LAST — the scheduler polls for this file.
+}
+
+fanout_run() {  # $1 = manifest, $2 = jobs, $3 = dry-run, $4 = resume, $5 = base
+  local manifest="$1" jobs="$2" dry="$3" resume="$4" base="$5"
+  local slug state claims plan id d st n_units=0 n_run=0 n_skip=0
+  local need_mb free_mb wt branch todo="" launched=0 finished pids="" p
+  local rc any_fail=0 n_done=0 n_failed=0 cost
+
+  [ -f "$manifest" ] || die2 "no such manifest: $manifest"
+  slug="$(fanout_slug "$manifest")"
+  [ -n "$slug" ] || die2 "cannot derive a slug from the manifest filename: $manifest"
+  state="$ROOT/.fleet/fanout/$slug"
+  mkdir -p "$state"
+  claims="$state/claims.json"
+  cp "$manifest" "$state/manifest.json"
+
+  # ── PRECONDITION 1: the units must be PROVABLY DISJOINT ────────────────────────────
+  fanout_prepare "$manifest" "$claims" "$state" "$slug" "$base"
+  plan="$state/plan"
+
+  echo "fanout → $manifest"
+  n_units="$(wc -l < "$plan" | tr -d ' ')"
+  echo "  units: $n_units   state: ${state#"$ROOT"/}"
+
+  echo "  --- disjointness precondition (check-claims.py — fleet's ownership gate)"
+  local cc_out cc_rc=0
+  cc_out="$state/check-claims.out"
+  ( cd "$ROOT" && python3 "$HERE/check-claims.py" "$claims" ) > "$cc_out" 2>&1 || cc_rc=$?
+  sed 's/^/    | /' "$cc_out"
+  if [ "$cc_rc" -ne 0 ]; then
+    echo "" >&2
+    echo "  REFUSED: the units of this manifest are NOT provably disjoint (see the OVERLAP lines" >&2
+    echo "  above, which name the colliding units and the offending path)." >&2
+    echo "" >&2
+    echo "  This is not a warning that fanout is capping around. Anthropic ran 16 agents at one" >&2
+    echo "  task with their C compiler and got: \"every agent would hit the same bug, fix that bug," >&2
+    echo "  and then overwrite each other's changes. Having 16 agents running didn't help because" >&2
+    echo "  each was stuck solving the same task.\" Agents on overlapping work do not go faster —" >&2
+    echo "  they duplicate the work and then DESTROY each other's edits. N agents on non-disjoint" >&2
+    echo "  work is strictly WORSE than N=1, so no --jobs value can rescue this manifest." >&2
+    echo "  Repartition the units so their \`owns\` globs are pairwise disjoint, then re-run." >&2
+    echo "  NOTHING was launched: no worktree, no branch, no worker." >&2
+    exit 2
+  fi
+
+  # Which units actually have to run?
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    st="$(cat "$state/units/$id/state" 2>/dev/null || echo pending)"
+    if [ "$resume" = "1" ] && [ "$st" = "done" ]; then
+      echo "  skip  $id — already done (--resume)"
+      n_skip=$((n_skip + 1))
+      continue
+    fi
+    todo="$todo $id"
+    n_run=$((n_run + 1))
+  done < "$plan"
+
+  if [ "$n_run" -eq 0 ]; then
+    echo "  nothing to do — all $n_units unit(s) are already done"
+    exit 0
+  fi
+
+  # ── PRECONDITION 2: DISK. Bun "ran out of disk space and crashed several times". ───
+  need_mb=$((n_run * FLEET_FANOUT_DISK_MB_PER_JOB))
+  free_mb="$(fanout_free_mb "$ROOT")"
+  case "$free_mb" in ''|*[!0-9]*) free_mb=0 ;; esac
+  echo "  --- disk preflight: need ~${need_mb}MB ($n_run × ${FLEET_FANOUT_DISK_MB_PER_JOB}MB/worktree), free ${free_mb}MB"
+  if [ "$free_mb" -lt "$need_mb" ]; then
+    die2 "INSUFFICIENT DISK: ${free_mb}MB free on the filesystem holding $ROOT, but $n_run worktree(s)
+  need about ${need_mb}MB (FLEET_FANOUT_DISK_MB_PER_JOB=${FLEET_FANOUT_DISK_MB_PER_JOB}). Bun's ~64-agent
+  fanout \"ran out of disk space and crashed several times\" — that is the ceiling this preflight
+  exists to stop you walking into. Free space, or lower FLEET_FANOUT_DISK_MB_PER_JOB if your
+  worktrees are genuinely smaller than that. NOTHING was launched."
+  fi
+
+  fanout_nice_prefix
+  echo "  --- plan: $n_run unit(s) to run, $n_skip already done, --jobs $jobs"
+  echo "      workers: $FANOUT_NICE"
+  case "$(uname -s)" in
+    Darwin) echo "      (macOS has no ionice: \`nice\` bounds CPU, NOT IOPS. Bun's ceiling was disk/IOPS" ;;
+    *)      echo "      (on Linux prefer a cgroup — systemd-run --scope -p IOWeight= — for a real I/O bound" ;;
+  esac
+  echo "       and Anthropic's was decomposability; --jobs is a starting point to TUNE, not an optimum.)"
+  for id in $todo; do
+    printf '      %-20s owns %s → %s\n' "$id" \
+      "$(tr '\n' ' ' < "$state/units/$id/owns")" "$(cat "$state/units/$id/branch")"
+  done
+
+  if [ "$dry" = "1" ]; then
+    echo ""
+    echo "  --dry-run: manifest VALIDATED, units PROVABLY DISJOINT, disk OK. Nothing launched."
+    exit 0
+  fi
+
+  # ── worktrees: created STRICTLY SERIALLY ───────────────────────────────────────────
+  # RFC part 3: 16 concurrent `git worktree add` → 4 FAILED on shared-.git contention; the same
+  # 16 created serially → 16/16 succeeded. Creation is serial; only the WORK below is parallel.
+  echo "  --- creating $n_run worktree(s) SERIALLY (concurrent \`git worktree add\` races the shared .git)"
+  for id in $todo; do
+    branch="$(cat "$state/units/$id/branch")"
+    wt="$ROOT/.fleet/worktrees/$branch"
+    if [ -d "$wt" ]; then
+      echo "      reuse $id → $wt"
+    else
+      "$HERE/worktree-setup.sh" "$branch" "$base" >/dev/null \
+        || die "cannot create the worktree for unit '$id' (branch $branch) — refusing to run a partial fanout"
+      echo "      +     $id → $wt"
+    fi
+    printf '%s\n' "$wt" > "$state/units/$id/worktree"
+  done
+
+  # ── the work: parallel, never more than $jobs in flight ────────────────────────────
+  echo "  --- running (max $jobs concurrent)"
+  # Clear every rc file up front: a STALE rc (from a previous, e.g. failed, run being --resume'd)
+  # would be counted as "finished" below and would let the scheduler over-launch past the cap.
+  for id in $todo; do rm -f "$state/units/$id/rc"; done
+  for id in $todo; do
+    # Free a slot. A unit is IN FLIGHT until it writes its `rc` file, which it does as its very
+    # last act — so counting rc files can never UNDER-count the in-flight set, and the cap holds.
+    while :; do
+      finished=0
+      for p in $todo; do [ -f "$state/units/$p/rc" ] && finished=$((finished + 1)); done
+      [ $((launched - finished)) -lt "$jobs" ] && break
+      sleep 0.2
+    done
+    echo "      → $id"
+    fanout_unit "$state" "$id" "$(cat "$state/units/$id/worktree")" &
+    pids="$pids $!"
+    launched=$((launched + 1))
+  done
+  for p in $pids; do wait "$p" 2>/dev/null || true; done
+
+  # ── report ────────────────────────────────────────────────────────────────────────
+  echo ""
+  echo "══ fanout report — $manifest ═════════════════════════════════════════════════"
+  printf '  %-18s %-10s %-8s %s\n' UNIT STATUS EXIT "BRANCH / WORKTREE"
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    d="$state/units/$id"
+    st="$(cat "$d/state" 2>/dev/null || echo pending)"
+    rc="$(cat "$d/rc" 2>/dev/null || echo '-')"
+    cost="$(grep -m1 '^  cost:' "$d/log" 2>/dev/null | sed 's/^ *cost: *//')"
+    printf '  %-18s %-10s %-8s %s\n' "$id" "$st" "$rc" "$(cat "$d/branch" 2>/dev/null)"
+    [ -n "$cost" ] && printf '  %-18s %s\n' "" "$cost"
+    case "$st" in
+      done)   n_done=$((n_done + 1)) ;;
+      failed) n_failed=$((n_failed + 1)); any_fail=1
+              printf '  %-18s log: %s\n' "" "${d#"$ROOT"/}/log" ;;
+    esac
+  done < "$plan"
+  echo ""
+  echo "  $n_done done, $n_failed failed, $n_skip skipped (of $n_units unit(s)). Logs: ${state#"$ROOT"/}/units/<id>/log"
+  echo "  A unit's failure does NOT abort its siblings — they are disjoint, so they are independent."
+  echo "  Re-run with --resume to retry only what did not finish."
+  echo "  fanout IS a work-runner: it exits NON-ZERO iff a unit failed. (\`review\` is the opposite —"
+  echo "  it is advisory evidence and must never block. Do not confuse the two.)"
+  echo "═══════════════════════════════════════════════════════════════════════════════"
+  exit "$any_fail"
+}
+
 # ── verbs ────────────────────────────────────────────────────────────────────────────
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$cmd" in
@@ -725,10 +1135,22 @@ $last"
     review_run "$wt" "$n" "$base"
     ;;
 
-  # `fanout <manifest> --jobs N` (concurrency-capped independent units) is the last RFC verb;
-  # it is OUT OF SCOPE here and lands as a follow-up — it composes on top of these four.
   fanout)
-    die "\`fanout\` is not implemented yet — it is a follow-up to #23/#36"
+    mf="${1:-}"; [ -n "$mf" ] || die2 "usage: fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]"
+    shift
+    jobs="${FLEET_FANOUT_JOBS:-}"; dry=0; resume=0; fbase="$FLEET_MAIN"
+    while [ $# -gt 0 ]; do case "$1" in
+      --jobs)     jobs="${2:?--jobs needs N}"; shift 2 ;;
+      --base)     fbase="${2:?--base needs a ref}"; shift 2 ;;
+      --dry-run)  dry=1; shift ;;
+      --resume)   resume=1; shift ;;
+      -*)         die2 "unknown arg: $1" ;;
+      *)          die2 "fanout takes exactly one manifest; the per-unit tasks live IN it (unexpected argument: $1)" ;;
+    esac; done
+    [ -n "$jobs" ] || jobs="$(fanout_default_jobs)"
+    case "$jobs" in ''|*[!0-9]*) die2 "--jobs needs a positive integer" ;; esac
+    [ "$jobs" -ge 1 ] || die2 "--jobs needs a positive integer"
+    fanout_run "$mf" "$jobs" "$dry" "$resume" "$fbase"
     ;;
 
   ""|-h|--help) usage ;;

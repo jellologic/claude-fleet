@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jellologic/claude-fleet/examples/fanout.schema.json",
+  "title": "claude-fleet fanout manifest",
+  "description": "A partition of the repository into PAIRWISE DISJOINT units, one headless worker per unit, each in its own worktree. `fleet delegate fanout <manifest>` PROVES the partition disjoint (via check-claims.py) before it launches anything, and REFUSES (exit 2) if it is not. Disjointness is a precondition, not advice: Anthropic ran 16 agents at one task and 'every agent would hit the same bug, fix that bug, and then overwrite each other's changes' — N agents on overlapping work is strictly worse than N=1, so no --jobs value can rescue a bad manifest.",
+  "type": "object",
+  "required": ["units"],
+  "properties": {
+    "units": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "owns", "task"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "description": "Unique. Becomes a branch (agent/fanout/<manifest-slug>/<id>) and a state directory."
+          },
+          "owns": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "description": "The unit's file partition, as repo-relative globs (no leading '/', no '..'). A bare directory means its whole subtree and is normalised to '<dir>/**'. MUST be pairwise disjoint with every other unit's `owns` — proven by check-claims.py, which also rejects globs that target the repo's `forbidden` (generated) paths."
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The unit's brief. Handed to a headless `claude -p` worker running in that unit's worktree, together with the `owns` set and an instruction never to write outside it."
+          },
+          "branch": {
+            "type": "string",
+            "description": "Optional. Override the derived branch name. Must satisfy the repo's branchPattern (see .claude/agent-claims.json)."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

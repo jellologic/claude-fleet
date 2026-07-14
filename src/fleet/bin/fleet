@@ -27,10 +27,13 @@ usage: fleet <command> [args]
   done <issue> [--force|--delete-remote]   post-MERGE cleanup (issue stays closed)
   reap [--stale H|--force|--delete-remote|--dry-run]   reclaim crashed/abandoned claims
   delegate {delegate <wt> "<task>"|feedback <wt> "<fix>"|loop <wt> --until '<check>' "<task>"
-            |review <wt> [--reviewers N] [--base <ref>]}
+            |review <wt> [--reviewers N] [--base <ref>]
+            |fanout <manifest.json> [--jobs N] [--dry-run] [--resume]}
                            hand a work-unit to a headless, OS-sandboxed \`claude -p\` worker;
                            \`review\` runs N=2 adversarial diff-only READ-ONLY reviewers whose
-                           findings must ship a runnable repro/patch (advisory — never blocks)
+                           findings must ship a runnable repro/patch (advisory — never blocks);
+                           \`fanout\` runs N units in parallel worktrees and REFUSES a manifest
+                           whose units are not provably disjoint (a cap cannot rescue overlap)
   wt {new <task>|bootstrap|rebase|reap <name>|list|prune}
   integrate <integ-branch> <branch>...   sequential merge + gate + rollback
   check [manifest]         validate the ownership manifest (disjoint claims)

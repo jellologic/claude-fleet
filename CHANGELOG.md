@@ -5,6 +5,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- **`fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]` — N units, one worktree
+  each, in parallel — but only if they are PROVABLY DISJOINT.** Two walls shaped this verb, and
+  neither of them was the model. **(1) Parallelism does nothing on work that is not disjoint.**
+  Anthropic pointed 16 agents at compiling the Linux kernel with their C compiler: *"every agent
+  would hit the same bug, fix that bug, and then overwrite each other's changes. Having 16 agents
+  running didn't help because each was stuck solving the same task."* N agents on overlapping work is
+  strictly **worse** than N=1 — they duplicate the work and then destroy each other's edits — so no
+  `--jobs` value can rescue a bad manifest. `fanout` therefore **PROVES** the units' `owns` globs
+  pairwise disjoint *before launching anything*, reusing **`check-claims.py`** (fleet's existing
+  ownership gate, driven with a claims manifest synthesised from the units, so glob-overlap logic is
+  not reimplemented), and **REFUSES the manifest with exit 2** — naming the colliding units and the
+  offending path — rather than capping and hoping. Nothing is created: no worktree, no branch, no
+  worker. **(2) The ceiling is disk and IOPS.** Bun ran ~64 agents over a 535k-line Zig→Rust port:
+  *"The machine ran out of disk space and crashed several times anyway"* and *"One slow `grep`
+  command was all it took to freeze disk reads & writes for minutes."* So: a **disk preflight**
+  (`units × FLEET_FANOUT_DISK_MB_PER_JOB`, default 512MB) refuses before a single worktree is
+  created; workers run under `nice` (and `ionice` where it exists — **macOS has neither, so `nice`
+  there bounds CPU, not IOPS; on Linux prefer a cgroup**); and `--jobs` defaults to
+  `min(cpu_count/2, 4)` — a conservative **proxy** for I/O headroom and an explicit starting point to
+  **tune per machine**, not a measured optimum. Worktrees are created **strictly serially** (16
+  concurrent `git worktree add` → 4/16 FAILED on shared-`.git` contention; serially → 16/16
+  succeeded) and only the *work* is parallel, never exceeding `--jobs` in flight. Each unit is a
+  normal `delegate` run (sandbox, `FLEET_WORKER_*` provider, 429/529 retry-with-backoff) on
+  `agent/fanout/<manifest>/<id>`. **A unit's failure does not abort its siblings** — but `fanout`
+  **exits non-zero iff any unit failed** (it is a work-runner; `review` is advisory and must never
+  block). Per-unit state (`pending`/`running`/`done`/`failed`) + logs persist under
+  `.fleet/fanout/<manifest-slug>/` (gitignored) so `--resume` skips units already `done` after a
+  crash; `--dry-run` validates the manifest + preflight, prints the plan, and launches nothing.
+  Manifest schema and a worked example: `examples/fanout.schema.json`, `examples/fanout.example.json`.
+  (#37)
+- `tests/negatives/fanout-disjoint.sh` — mutation-checked. Asserts that an **overlapping manifest is
+  REFUSED (exit 2) with NO worktree, NO branch and NO worker created** (the load-bearing one — that
+  is the Anthropic failure); that a disjoint manifest does run; that **worktree creation is strictly
+  serial** (instrumented wrapper, zero overlapping creations); that **`--jobs N` is enforced** (the
+  `claude` stub logs enter/exit timestamps and max concurrency must be ≤ N — *and* > 1, so the cap
+  assertion cannot pass vacuously on a serial implementation); that one unit's failure does not abort
+  its siblings while fanout still exits non-zero; that `--dry-run` launches nothing; that `--resume`
+  re-runs only what is not `done`; and that the disk preflight refuses before anything is created.
+  Mutation-verified: removing the disjointness check, parallelizing worktree creation, and ignoring
+  `--jobs` each make the corresponding assertion fail. (#37)
 - **`fleet delegate review <wt> [--reviewers N] [--base <ref>]` — adversarial diff-only reviewers
   that emit EVIDENCE, never verdicts.** N defaults to **2** (Bun ran "1 implementer, 2 or more
   adversarial reviewers per implementer" over a 535k-line Zig→Rust port). Each reviewer is
