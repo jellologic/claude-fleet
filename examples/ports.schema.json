@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jellologic/claude-fleet/examples/ports.schema.json",
+  "title": "claude-fleet port registry (.fleet/ports.json)",
+  "description": "The CONTRACT layer (#48). `fanout` proves the units own disjoint FILES; it proves NOTHING about their INTERFACES. Two agents can own non-overlapping paths and still build to incompatible contracts, and the collision surfaces only at integration. Anthropic ran 16 agents with their `current_tasks/` git-file lock FULLY IN FORCE and still got: 'Every agent would hit the same bug, fix that bug, and then overwrite each other's changes. Having 16 agents running didn't help because each was stuck solving the same task.' File-level locking enforces distinct task NAMES, not distinct semantic WORK. A port registry declares the interfaces that are FROZEN before fanout: each `artifact` is committed to the BASE BRANCH and is READ-ONLY to every unit that does not `provides` it (any unit whose diff touches it is an automatic gate failure), and `fleet spec amend <port>` is the only sanctioned way to change one — it names every consumer and requires them to be RE-RUN. Bun and Anthropic ran 64 and 16 agents with no contract layer, but both had a complete frozen reference FOR FREE (Bun's Zig source: 1,448 .zig -> 1,448 .rs, 1:1, so every module boundary and signature was fixed in advance and no interface NEGOTIATION was ever needed; Anthropic's C standard + GCC). Greenfield fanout has NEITHER — read their success as 'they already had the best possible contract layer', not 'you don't need one'.",
+  "type": "object",
+  "required": ["ports"],
+  "properties": {
+    "ports": {
+      "type": "object",
+      "description": "port id -> port. The id is opaque to fleet; `port:Name` is the convention.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["artifact"],
+        "properties": {
+          "artifact": {
+            "type": "string",
+            "minLength": 1,
+            "description": "THE FROZEN PORT: a repo-relative path to a TYPED, MACHINE-CHECKABLE interface file — a .d.ts, a .pyi, a trait/interface file, a protobuf schema, an OpenAPI document. NEVER PROSE. Every N-agent project that actually worked froze something a machine could check (Bun's Zig source; Anthropic's C standard + GCC; 1.39M test assertions); every prose-spec tool has effectively zero published evidence. A prose contract cannot be checked, so it cannot be enforced, so it is not a contract — it is a suggestion, and N agents will each read a different one out of it. COMMIT THIS FILE TO THE BASE BRANCH BEFORE FANNING OUT. It is then read-only to every unit that does not `provides` it."
+          },
+          "stub": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional. Where `fleet spec stub` writes a COMPILING stub for this port, via the per-repo hook `fleet_stub_for <artifact> <stub-path>` in .fleet/config.sh (stack-agnostic; documented no-op default). A stub lets a CONSUMER unit typecheck and run its own tests on DAY ZERO, without the PROVIDER unit existing at all. STVR 2025: 'By decoupling the consumer and provider via the contract file, the CDC tests don't require running the consumer and the provider simultaneously.' The stub only has to COMPILE — `throw new Error(\"stub\")` / `raise NotImplementedError` bodies are correct here."
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional human note. It is NOT the contract. The artifact is the contract."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

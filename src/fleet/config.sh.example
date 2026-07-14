@@ -55,3 +55,33 @@ fleet_gate() {
 fleet_pkg_for() {
   echo ""   # e.g. case "$1" in crates/*/*) echo "$(echo "$1"|cut -d/ -f2)";; *) echo "";; esac
 }
+
+# --- Generate a COMPILING STUB for a frozen port (`fleet spec stub`) ------
+# $1 = the frozen port artifact (a TYPED, machine-checkable file: .d.ts / .pyi / trait /
+#      protobuf / OpenAPI — NEVER prose). $2 = the stub path to write. cwd = the repo root.
+# WHY: a CONSUMER unit must typecheck and run its own tests on DAY ZERO, without the PROVIDER
+# unit existing at all. STVR 2025: "By decoupling the consumer and provider via the contract
+# file, the CDC tests don't require running the consumer and the provider simultaneously."
+# Stub generation is inherently stack-specific, so it is a hook. Default: a documented NO-OP —
+# `fleet spec stub` says loudly that nothing was generated rather than fake it. STACK-SPECIFIC.
+fleet_stub_for() {
+  :  # no-op by default. Examples:
+  #   case "$1" in
+  #     *.d.ts) bunx tsx tools/stub-from-dts.ts "$1" > "$2" ;;   # or hand-write a throwing impl
+  #     *.pyi)  python3 tools/stub_from_pyi.py "$1" > "$2" ;;
+  #     *.proto) protoc --plugin=protoc-gen-stub … ;;
+  #   esac
+  # The stub only has to COMPILE and satisfy the type-checker. `throw new Error("stub")` /
+  # `raise NotImplementedError` bodies are correct here: the STUB is not the implementation,
+  # it is the thing that lets a consumer be built before the provider exists.
+}
+
+# --- Contract PRE-GATE (optional, but this is where it belongs) -----------
+# `fleet spec check` runs the static port proofs + the frozen-port diff proof. It is a fast
+# PRE-GATE, NEVER the verdict: contract tests caught 41/53 (77%) of seeded integration defects
+# (STVR 2025) and missed nearly every value-range bug — "They could not replace the service
+# black-box tests but only complement them." Put it FIRST in fleet_gate, above the real suite:
+#   fleet_gate() {
+#     .fleet/bin/fleet spec check || return $?     # pre-gate: cheap, static, refuses drift
+#     cargo check --workspace && cargo nextest run --workspace   # the ORACLE
+#   }
