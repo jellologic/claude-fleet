@@ -5,6 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- ⚠️ **`fleet spec` — EXPERIMENTAL AND UNVALIDATED.** It ships **only** because the experiment that would settle it (#61) cannot run without it. **We measured it and the evidence does not support it:** a typed port showed **no advantage over a precise prose brief** (0/3 vs 0/3) and was *slower*. The literature predicted that tie — strong models hold ~7-8 constraints before compliance decays, so a 2-unit brief sits in the flat region of every published curve; our pilot was **underpowered**, not conclusive. Worse, enforcement's benefit **decays to zero as models get stronger** (PLDI 2025: +0.3% at 32B, i.e. noise; arXiv 2606.21619: *equivalent* for a frontier code model that is well-shaped 99.8% of the time), and an **incomplete** contract is catastrophic — **up to −97% functional correctness, worst for the strongest model**. A stale port file is the normal state of a hand-maintained interface. **What IS measured and does hold: an UNSPECIFIED interface cost 2/4 integration failures. Specify your interfaces — in prose is fine.** Nothing yet checks conformance (#57), so without a `fleet_spec_conform` hook the port is decorative. (#48)
 - **`fleet spec {init|check [manifest]|stub [manifest]|amend <port>}` — the CONTRACT/PORT layer:
   freeze a TYPED, MACHINE-CHECKABLE interface and extend the disjointness proof from FILES to
   INTERFACES.** `fanout` proves the units own disjoint **files**. It proves **nothing** about their

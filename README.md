@@ -66,7 +66,7 @@ the **worker** does the labour.
 | `fleet delegate loop <wt> --until '<check>' "<task>"` | **self-heal**: run → run the check → feed its failure back → repeat, bounded by `--max-iters` (default 3). Exit 0 when the check goes green; non-zero (escalate) when it never does. |
 | `fleet delegate review <wt> [--reviewers N] [--base <ref>]` | **N=2 adversarial, diff-only, read-only reviewers.** Every finding must ship a runnable repro or patch; the artifact is *executed* and adjudicated by `fleet_gate`. **Advisory — it never blocks.** |
 | `fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]` | **N units, one worktree each, run in parallel — but only if they are PROVABLY DISJOINT.** Refuses (exit 2) a manifest whose `owns` globs overlap. Worktrees created *serially*, work run *concurrently*. Exits non-zero iff a unit failed. |
-| `fleet spec {init\|check\|stub\|amend <port>}` | **THE CONTRACT LAYER.** `fanout` proves the units own disjoint **files**; it proves nothing about their **interfaces**. `spec` freezes a **typed, machine-checkable port** on the base branch, makes it **read-only to every unit but its provider**, and extends the disjointness proof to `provides`/`consumes`: **no dangling port, no duplicate provider, no cycle** — or the manifest is REFUSED. A **pre-gate**, never the oracle. |
+| `fleet spec {init\|check\|stub\|amend <port>}` | ⚠️ **EXPERIMENTAL — unvalidated, see the warning below.** `fanout` proves the units own disjoint **files**; it proves nothing about their **interfaces**. `spec` freezes a **typed, machine-checkable port** on the base branch, makes it **read-only to every unit but its provider**, and extends the disjointness proof to `provides`/`consumes`: **no dangling port, no duplicate provider, no cycle** — or the manifest is REFUSED. A **pre-gate**, never the oracle. |
 | `fleet fronts [--oracle '<cmd>'] [--shard-by file\|package\|dir] [-o m.json]` | **WORK-FRONT GENERATOR** — writes the manifest `fanout` consumes. Runs the oracle, shards its **failures** into disjoint units. **The oracle decides the decomposition, never a model.** Says **NOT DECOMPOSABLE** and emits ONE unit when the failures don't actually split. |
 
 ```sh
@@ -245,7 +245,41 @@ It emits **exactly one unit** and says so, loudly. Splitting there would *be* th
 failure — and detecting it **before** you burn 16 agents on it is the entire reason to run the oracle
 first. When that happens the answer is not a bigger `--jobs`; it is **a better oracle**.
 
-### `spec` — freeze a **machine-checkable** port, and extend the proof from **files** to **interfaces**
+### `spec` — ⚠️ **EXPERIMENTAL AND UNVALIDATED. Do not rely on it.**
+
+> **We built this, measured it, and the evidence does not support it. It ships only because the
+> experiment that would settle it ([#61](https://github.com/jellologic/claude-fleet/issues/61))
+> cannot run without it.** Read this before using it.
+>
+> **What IS measured (and does hold):** an **unspecified** interface across parallel agents cost
+> **2/4 integration failures** plus systematic duplicate implementation — agents with *provably
+> disjoint file ownership* invented incompatible interfaces. **Specify your interfaces.**
+> ([`experiments/port-contract/`](experiments/port-contract/RESULTS.md))
+>
+> **What is NOT measured — the claim this feature rests on:** that a **typed, machine-checkable**
+> port beats a **precise prose** brief. In our pilot it did **not**: 0/3 vs 0/3, and the typed arm
+> was *slower*. The literature predicted exactly that tie — strong models hold ~7–8 constraints
+> before compliance decays, so a 2-unit brief sits in the flat region of every published curve. Our
+> pilot was **underpowered**, not conclusive: it measured the forecast, not the feature.
+>
+> **The risk you are taking on.** Enforcement's benefit **decays to zero as models get stronger**
+> ([PLDI 2025](https://arxiv.org/abs/2504.09246): +0.3% at 32B — noise;
+> [arXiv 2606.21619](https://arxiv.org/abs/2606.21619): *equivalent* for a frontier code model,
+> which emits well-shaped output 99.8% of the time). And an **incomplete** contract is far worse
+> than none — **up to −97% functional correctness, worst for the strongest model**. A stale,
+> under-specified, or overload-missing port file is the *normal* state of a hand-maintained
+> interface. **A rotting `.pyi` may be worse than no `.pyi` at all.**
+>
+> **Also**: nothing currently checks that an implementation *conforms* to its port
+> ([#57](https://github.com/jellologic/claude-fleet/issues/57)) — without a `fleet_spec_conform`
+> hook wired into your gate, the port is **decorative**.
+>
+> Use `fanout` + a precise prose brief. That is what the evidence supports today.
+
+<details>
+<summary>What it does, for anyone running the experiment</summary>
+
+**freeze a machine-checkable port, and extend the proof from files to interfaces**
 `fanout` proves the units own **disjoint files**. It proves **nothing about their interfaces**. Two
 agents can own non-overlapping paths and still build to **incompatible contracts** — and the
 collision surfaces only at **integration**, which is the most expensive place for it to surface.
@@ -414,6 +448,9 @@ agent. The only things that hold under a subprocess are the OS sandbox and the s
 behaviour that is explicitly slated to change (`--bare` becoming the `-p` default). Pin the version
 the fleet runs, and re-verify the negatives suite (`tests/negatives/`) on every upgrade — it is
 designed to fail loudly if a rail has silently become a no-op.
+
+
+</details>
 
 ## Requirements
 `bash`/`sh`, `git`, `python3` (guards + ownership gate), and `gh` (issue-driven claiming).
