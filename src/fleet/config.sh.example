@@ -76,12 +76,51 @@ fleet_stub_for() {
   # it is the thing that lets a consumer be built before the provider exists.
 }
 
+# --- CONFORMANCE: does the IMPLEMENTATION match the frozen port? (`fleet spec conform`) ---
+# $1 = the frozen port artifact. $2 = the unit's `owns` paths, space-separated. cwd = repo root.
+# Return 0 = conforms; non-zero = DRIFT (say WHAT drifted on stdout/stderr; fleet reports it).
+#
+# THIS IS THE HOOK THAT MAKES A PORT A PORT. Without it `fleet spec` shows the artifact to the
+# worker, makes it READ-ONLY, and stubs it — but NOTHING checks the code against it. A unit can
+# `provides: ["port:Store"]`, never touch ports/store.pyi (so the read-only rule passes), and
+# implement a COMPLETELY DIFFERENT interface, and every other proof stays green. That is a
+# SUGGESTION, not a contract. Leave this unset and `fleet spec` will tell you so, loudly, every
+# run: "the frozen port is DECORATIVE". (#57)
+#
+# STACK-SPECIFIC, exactly like fleet_gate / fleet_pkg_for / fleet_stub_for — but UNLIKE them it is
+# shipped UNDEFINED, not as a no-op. A no-op default would PASS SILENTLY, which is indistinguishable
+# from a real check that found nothing, which is the exact failure this hook exists to end. Undefined
+# means `fleet spec check|conform` prints a LOUD warning instead. Uncomment ONE line and adapt:
+#
+# fleet_spec_conform() {
+#   python3 .fleet/bin/spec-conform.py "$1" $2        # SHIPPED, stdlib-only: a .pyi vs the impl
+#   # mypy --strict $2                                # Python — strictly stronger: types, not shapes
+#   # pyright $2
+#   # npx tsc --noEmit -p tsconfig.json               # TypeScript — the .d.ts IS the check
+#   # cargo check -p "$(basename "$2")"               # Rust — the trait IS the check
+#   # protoc --lint_out=. "$1"                        # protobuf
+# }
+#
+# $2 IS UNQUOTED ON PURPOSE: it is a space-separated list of paths/globs, and must word-split.
+# The shipped .fleet/bin/spec-conform.py is the checker of LAST RESORT — it compares SHAPES (names
+# and parameter lists), not types, and never behaviour. It exists because fleet's own stack is
+# shell + python3 and on a PEP 668 system `pip install mypy` often is not an option. If you HAVE
+# mypy/pyright/tsc, point this hook at them instead: they are strictly stronger.
+
 # --- Contract PRE-GATE (optional, but this is where it belongs) -----------
-# `fleet spec check` runs the static port proofs + the frozen-port diff proof. It is a fast
-# PRE-GATE, NEVER the verdict: contract tests caught 41/53 (77%) of seeded integration defects
-# (STVR 2025) and missed nearly every value-range bug — "They could not replace the service
-# black-box tests but only complement them." Put it FIRST in fleet_gate, above the real suite:
+# `fleet spec check` runs the static port proofs + the frozen-port diff proof + (if the hook above
+# is defined) the CONFORMANCE check. It is a fast PRE-GATE, NEVER the verdict: contract tests caught
+# 41/53 (77%) of seeded integration defects (STVR 2025) and missed nearly every value-range bug —
+# "They could not replace the service black-box tests but only complement them." Put it FIRST in
+# fleet_gate, above the real suite:
 #   fleet_gate() {
 #     .fleet/bin/fleet spec check || return $?     # pre-gate: cheap, static, refuses drift
+#     .fleet/bin/fleet spec conform || return $?   # pre-gate: the CODE vs the PORT (#57)
 #     cargo check --workspace && cargo nextest run --workspace   # the ORACLE
 #   }
+# WARNING — a REAL port fails the gate when it goes STALE, and that is the point. Once conformance
+# is enforced, an out-of-date port artifact will REJECT a correct implementation. That is intended
+# behaviour, and it is also exactly the failure mode the -97%-functional-correctness result
+# (arXiv 2606.21619) warns about: an INCOMPLETE contract is far worse than no contract, and worst
+# for the STRONGEST model. Keep your ports current, or turn this hook off. Do not leave a rotting
+# .pyi wired into your gate.
