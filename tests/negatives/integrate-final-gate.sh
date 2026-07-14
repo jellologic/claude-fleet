@@ -59,7 +59,14 @@ git checkout -qb integ
 export FLEET_TEST_COUNTER="$TMP/gate-calls"
 export FLEET_TEST_FAIL_ON=2
 set +e
-out="$(.fleet/bin/fleet-integrate.sh integ feat 2>&1)"; rc=$?
+# FLEET_SKIP_GATE_CHECK=1 (#44): since #30, `fleet-integrate` refuses to run unless the
+# pre-push merge gate is wired (core.hooksPath → .fleet/githooks). This throwaway repo has
+# no hooks installed, so without the opt-out integrate dies at the gate-integrity check and
+# NEVER REACHES the FINAL gate this test exists to exercise. That is exactly the escape
+# hatch #30 shipped for ("hooks managed elsewhere"). The precondition assertions below are
+# what caught the regression — they refused to report a pass on a run that proved nothing.
+# Do NOT remove this: the gate-check is about hook WIRING; this test is about the FINAL gate.
+out="$(FLEET_SKIP_GATE_CHECK=1 .fleet/bin/fleet-integrate.sh integ feat 2>&1)"; rc=$?
 set -e
 
 echo "$out" | sed 's/^/    | /'
@@ -77,7 +84,7 @@ echo "$out" | grep -q "FINAL: FAIL"      || fail "FINAL gate did not report FAIL
 export FLEET_TEST_FAIL_ON=99
 git checkout -q main; git branch -qD integ; git checkout -qb integ
 set +e
-.fleet/bin/fleet-integrate.sh integ feat >/dev/null 2>&1; rc_pass=$?
+FLEET_SKIP_GATE_CHECK=1 .fleet/bin/fleet-integrate.sh integ feat >/dev/null 2>&1; rc_pass=$?
 set -e
 [ "$rc_pass" -eq 0 ] || fail "fleet-integrate exited $rc_pass with an all-PASSING gate — the fix over-fires"
 
