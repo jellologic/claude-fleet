@@ -5,6 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- `experiments/port-contract/` — the **first published measurement** of integration-failure rate for parallel coding agents, with the harness to reproduce it. Pilot (n=3–4/arm, one task, GLM-5.2). **An unspecified interface cost ~50% integration failure (2/4) plus systematic duplicate implementation** — two agents with provably disjoint `owns` globs invented incompatible interfaces (`store` built `add/get/complete/list`; `api` expected `save/put/store/upsert` and raised `TypeError: store cannot persist a task`). **A frozen typed port showed NO measured advantage over precise prose (0/3 vs 0/3).** What is measured is the value of *specifying* the interface, not of machine-checking it — #48's core claim is NOT demonstrated here, most likely a ceiling effect on a 2-unit task. The typed port's real edge (it can be *enforced*; prose cannot gate a merge) is exactly what this experiment could not measure. Threats to validity and the next experiment are written up in `RESULTS.md`. (#50)
 - **`fleet spec {init|check [manifest]|stub [manifest]|amend <port>}` — the CONTRACT/PORT layer:
   freeze a TYPED, MACHINE-CHECKABLE interface and extend the disjointness proof from FILES to
   INTERFACES.** `fanout` proves the units own disjoint **files**. It proves **nothing** about their
