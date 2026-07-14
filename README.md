@@ -66,6 +66,7 @@ the **worker** does the labour.
 | `fleet delegate loop <wt> --until '<check>' "<task>"` | **self-heal**: run → run the check → feed its failure back → repeat, bounded by `--max-iters` (default 3). Exit 0 when the check goes green; non-zero (escalate) when it never does. |
 | `fleet delegate review <wt> [--reviewers N] [--base <ref>]` | **N=2 adversarial, diff-only, read-only reviewers.** Every finding must ship a runnable repro or patch; the artifact is *executed* and adjudicated by `fleet_gate`. **Advisory — it never blocks.** |
 | `fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]` | **N units, one worktree each, run in parallel — but only if they are PROVABLY DISJOINT.** Refuses (exit 2) a manifest whose `owns` globs overlap. Worktrees created *serially*, work run *concurrently*. Exits non-zero iff a unit failed. |
+| `fleet fronts [--oracle '<cmd>'] [--shard-by file\|package\|dir] [-o m.json]` | **WORK-FRONT GENERATOR** — writes the manifest `fanout` consumes. Runs the oracle, shards its **failures** into disjoint units. **The oracle decides the decomposition, never a model.** Says **NOT DECOMPOSABLE** and emits ONE unit when the failures don't actually split. |
 
 ```sh
 .fleet/bin/fleet claim 42
@@ -175,6 +176,73 @@ projects of very different shape. Set it empirically and instrument it.
 **Worktrees are created serially; only the work is parallel.** Firing 16 `git worktree add`
 concurrently, **4 of 16 failed** on shared-`.git` contention; created serially, 16/16 succeeded.
 Concurrent *commits* from separate worktrees are fine — it's creation that races.
+
+### `fronts` — the **oracle** decides the decomposition, **not a model**
+`fanout` needs a manifest. Where does the manifest come from? Until now: a human wrote it and
+**guessed** at the decomposition. That guess is the single highest-stakes decision in a parallel
+agent run — and it is exactly the decision a model is worst at, because "how would you split this
+work?" always yields N plausible-sounding units whether or not N independent units exist.
+
+**Both flagship N-agent projects independently converged on the same answer, and it was not a spec
+registry.** It was: **run a machine oracle → take its list of failures → shard the failures into N
+disjoint units → fan out.** The compiler's error list *is* the work queue.
+
+Bun, ~64 agents over a 535k-line Zig→Rust port ([source](https://bun.com/blog/bun-in-rust)):
+
+> *"`cargo check` wrote ≈16,000 errors to a file, **grouped by crate**; the workflow divvied them up
+> among 64 Claudes."*
+
+Anthropic, 16 agents on a C compiler — the **negative** result
+([source](https://www.anthropic.com/engineering/building-c-compiler)):
+
+> *"Unlike a test suite with hundreds of independent tests, compiling the Linux kernel is one giant
+> task. Every agent would hit the same bug, fix that bug, and then overwrite each other's changes.
+> Having 16 agents running didn't help because each was stuck solving the same task. **The fix was to
+> use GCC as an online known-good compiler oracle to compare against.**"* … *"**This let each agent
+> work in parallel, fixing different bugs in different files.**"*
+
+Their kernel failure was a **decomposition** failure, not a contract failure — and what fixed it was
+an oracle that **shattered one blocking failure into N independent ones**. fleet already had the
+oracle (`fleet_gate`) and the fan-out (`fanout`) and **nothing in between**. `fronts` is that middle.
+
+```sh
+.fleet/bin/fleet fronts --dry-run                              # what would the oracle shard into?
+.fleet/bin/fleet fronts -o m.json && \
+  .fleet/bin/fleet delegate fanout m.json --jobs 4             # generator ▸ consumer
+.fleet/bin/fleet fronts --oracle 'cargo check' --shard-by package -o m.json   # Bun's exact move
+.fleet/bin/fleet fronts --oracle 'tsc --noEmit' --max-units 8 -o m.json
+```
+
+| Flag | |
+|------|--|
+| `--oracle '<cmd>'` | the machine oracle. Default: **`fleet_gate`**. Anything that exits non-zero and names files: `cargo check`, `tsc --noEmit`, `pytest -q`, `bash -n`, or a **differential run against a known-good reference** (the thing that actually fixed Anthropic's kernel run). **Exit 0 = nothing failing = no work fronts.** That is success, not an error: it emits nothing and exits 0. |
+| `--shard-by file\|package\|dir` | one unit per failing **file** (default); per **`fleet_pkg_for`** package (Bun's *"grouped by crate"*); or per top-level **dir**. |
+| `-o <manifest.json>` | default **stdout**, so it pipes. |
+| `--max-units N` | cap the units. Excess fronts are **MERGED** (smallest first) and **logged**. A failing file is **never dropped** — a dropped file is a failure nobody is assigned to, and the oracle stays red forever with no one to say why. |
+| `--task '<tmpl>'` | override the derived task text (`{files}` `{count}` `{messages}`). |
+| `--dry-run` / `--require-parallel` | print the plan and write nothing / **exit 2** when the work is not decomposable (for CI). |
+
+Failures are parsed into **repo-relative paths** (rustc/gcc/clang/eslint/shellcheck `path:line:col:`,
+rustc's `--> path:line:col`, tsc's `path(line,col):`, python tracebacks, `bash -n`) and then filtered
+**hard**: a path becomes a work front **only if `git ls-files` tracks it**. That one filter is what
+keeps a compiler's noisy output from pointing an agent at `/usr/include/stdio.h`, a `/tmp` build
+artefact, or a path that simply does not exist. Before writing anything, `fronts` runs its own
+manifest through **`check-claims.py`** — the same prover `fanout` will run it through — and dies if
+its own consumer would refuse it.
+
+**And it refuses to manufacture parallelism that isn't there.** If every failure traces to one file,
+one package, one dir, then there is **one** work front:
+
+```
+NOT DECOMPOSABLE: all 5 failure(s) trace to src/parser/parser.rs.
+This is ONE work front, not N. Fanning out here is the Anthropic kernel failure:
+'16 agents ... each was stuck solving the same task' ...
+Run it as a SINGLE unit, or find an oracle that SHATTERS this failure into independent ones.
+```
+
+It emits **exactly one unit** and says so, loudly. Splitting there would *be* the 16-agent kernel
+failure — and detecting it **before** you burn 16 agents on it is the entire reason to run the oracle
+first. When that happens the answer is not a bigger `--jobs`; it is **a better oracle**.
 
 ### The worker is a separate process — that's the whole trick
 `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` are **global per process**. You *cannot* route one
