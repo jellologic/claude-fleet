@@ -32,6 +32,13 @@ changes in `src/`; `.fleet/` is refreshed by `install.sh` / `/fleet-update`.
 - `src/templates/**`, `examples/**`, `assets/**`, root `*.md` — docs/templates/assets.
 - Root scripts (`install.sh`, `uninstall.sh`, `*.py`) — single-owner; coordinate.
 
+### Headless agents (`fleet delegate`)
+- **Never** launch a headless agent with `--bare` — it disables every hook, and is slated to become
+  the `-p` default. `fleet delegate` refuses it.
+- **Pin the Claude Code version** the fleet runs; re-run `tests/negatives/` after any upgrade.
+- The Python guards are defence-in-depth, **not** a boundary: they do not bind subprocesses. The OS
+  sandbox and the GitHub ruleset are the load-bearing rails. See the README rail table.
+
 ### Gate
 `fleet_gate` lints shell (`bash -n`/`sh -n`) + parses python (`py_compile`). Keep it green.
 

@@ -23,3 +23,10 @@ git push && gh pr ready             # a human reviews + merges
 Optionally gate file ownership: claim with `FLEET_CLAIM_OWNS="<glob>,<glob>"` — overlapping
 claims are rejected. The integrator merges a batch with `.fleet/bin/fleet integrate <branch> <branches...>`
 (per-merge gate + rollback). Reclaim crashed claims with `.fleet/bin/fleet reap`.
+
+### Headless agents (`fleet delegate`)
+- **Never** launch a headless agent with `--bare` — it disables every hook, and is slated to become
+  the `-p` default. `fleet delegate` refuses it.
+- **Pin the Claude Code version** the fleet runs; re-run `tests/negatives/` after any upgrade.
+- The Python guards are defence-in-depth, **not** a boundary: they do not bind subprocesses. The OS
+  sandbox and the GitHub ruleset are the load-bearing rails. See the README rail table.
