@@ -4,6 +4,17 @@ All notable changes to claude-fleet are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.3.1] — 2026-07-14
+**Two prerequisites for the experiment that will decide `fleet spec`'s fate — and a changelog we destroyed and restored.**
+
+`fleet integrate --cohort` fixes an assumption that `fanout` + `spec` made newly wrong: the per-branch
+gate rolled back any branch that was not *independently* green, but a consumer and its provider are only
+green **together**. `fleet spec conform` fixes the fact that a frozen port was **decorative** — nothing
+checked the implementation against it, which is exactly why the #50 experiment measured nothing.
+
+Neither is evidence that `fleet spec` works. Both are what make #61 — the experiment that will either
+justify it or delete it — runnable at all.
 ### Added
 - `tests/negatives/integrate-cohort.sh` — mutation-checked; its oracle is a real integration test that is red for either unit alone and green only for both. Asserts the bug itself (no `--cohort` → both rejected, tree empty) alongside the fix. (#55)
 - **`fleet spec conform` + a `fleet_spec_conform` hook — the frozen port is no longer DECORATIVE.** `spec` froze a port, made it read-only, and generated a stub — but **nothing ever checked that the implementation matched it.** A unit could `provides: port:Store`, never touch `ports/store.pyi` (satisfying the read-only rule), and implement a completely different interface; the three existing proofs (dangling / duplicate-provider / cycle) are all about the **manifest graph**, not the **code**. So a port was prose the worker could read plus a file it must not edit — *a suggestion, not a contract*. **This is precisely why the #50 experiment measured nothing: the treatment was never applied.** Ships a stdlib-only Python checker (`spec-conform.py`: `ast` on the `.pyi`, `inspect` on the impl) and a stack-agnostic `fleet_spec_conform <artifact> <owns…>` hook (point it at mypy/pyright/tsc/cargo-check). **The hook ships UNDEFINED, not as a no-op** — a no-op would pass silently, which is indistinguishable from a real check finding nothing, i.e. the exact decorative failure this fixes. Unconfigured ⇒ a **loud warning** that the port is decorative. A pre-gate, never the oracle. (#57)
@@ -361,7 +372,8 @@ Initial public release.
 - **Self-report protocol** (`SELF-REPORT.md`) referenced from every script.
 - MIT license.
 
-[Unreleased]: https://github.com/jellologic/claude-fleet/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jellologic/claude-fleet/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/jellologic/claude-fleet/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jellologic/claude-fleet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jellologic/claude-fleet/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jellologic/claude-fleet/compare/v0.1.0...v0.1.1
