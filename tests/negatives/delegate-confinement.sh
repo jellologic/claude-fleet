@@ -266,4 +266,19 @@ echo "$out" | grep -q -- "--bare" || fail "the --bare refusal did not name the f
 grep -q -- "--bare" "$EV/argv.log" && fail "--bare was actually forwarded to the worker"
 echo "    ok: --bare refused, never forwarded"
 
-echo "PASS: sandboxed worker cannot write outside its worktree (redirect, python3 subprocess, sibling worktree — all EPERM) yet CAN git commit inside it; delegate fails CLOSED when the sandbox is unavailable and only escapes with the loud explicit opt-out; 529 retried with backoff while a genuine task failure is not; loop --until self-heals via an in-context --resume and escalates non-zero when it cannot; the bearer token never touches argv or a log; --bare refused"
+# === 8. An unknown worktree must DIE, not confine to an empty path ====================
+# `resolve_wt` calls `die` from inside the caller's command substitution — a SUBSHELL —
+# and this script does not `set -e`. So without an explicit status check at the call site
+# the parent assigns an EMPTY worktree and marches on to build a sandbox profile whose
+# confinement subpath is "". That is a confinement bug wearing a usage-error costume:
+# `(subpath "")` is not "confine to nothing", it is a malformed profile.
+: > "$EV/argv.log"
+out="$($D delegate /no/such/worktree-nope "x" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "delegate accepted an unknown worktree (exit 0) instead of dying"
+echo "$out" | grep -qi "no such worktree" || fail "the unknown-worktree failure was not reported"
+echo "$out" | grep -q 'subpath ""' && fail "a sandbox profile was built with an EMPTY confinement path"
+echo "$out" | grep -qi "confined to  " && fail "the sandbox banner shows an empty confinement path — resolve_wt's die was swallowed by its subshell"
+[ -s "$EV/argv.log" ] && fail "the worker was INVOKED despite an unresolvable worktree — delegate did not fail closed"
+echo "    ok: unknown worktree dies before any sandbox profile or worker invocation"
+
+echo "PASS: sandboxed worker cannot write outside its worktree (redirect, python3 subprocess, sibling worktree — all EPERM) yet CAN git commit inside it; delegate fails CLOSED when the sandbox is unavailable and only escapes with the loud explicit opt-out; 529 retried with backoff while a genuine task failure is not; loop --until self-heals via an in-context --resume and escalates non-zero when it cannot; the bearer token never touches argv or a log; --bare refused; an unknown worktree dies before the worker runs"
