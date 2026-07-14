@@ -68,7 +68,23 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # ── worker liveness (#58) ── API_TIMEOUT_MS is an *API* timeout: a worker wedged in a tool
 # loop never trips it. These bound the PROCESS.
 : "${FLEET_WORKER_WALL_TIMEOUT_S:=3600}"   # hard ceiling on a single worker invocation
-: "${FLEET_WORKER_STALL_S:=600}"           # no output for this long ⇒ stalled ⇒ killed. 0 disables.
+# STALL DETECTION IS OFF BY DEFAULT, and that is deliberate (#70).
+#
+# The worker runs with `--output-format json`, which prints the ENTIRE result at the END, in one
+# blob. A perfectly healthy worker therefore produces ZERO incremental output for its whole run.
+# An output-growth "stall" detector measuring that stream is measuring NOTHING — "quiet" is always
+# true — so a non-zero FLEET_WORKER_STALL_S is not a liveness signal at all. It is a hidden SECOND
+# wall-clock timeout that kills any worker slower than the threshold.
+#
+# It did exactly that: in the #61 experiment it killed healthy `api` workers at 600s, and because
+# the arm under test had a longer prompt (and so ran slower), it hit that arm HARDER — corrupting
+# the result in the direction of the hypothesis. A monitor whose input is constant is worse than no
+# monitor: it fires on the wrong thing, and you believe it.
+#
+# So: 0 (off) unless the caller opts in, and it is only meaningful once the worker STREAMS
+# (`--output-format stream-json`, the follow-up). The WALL-CLOCK timeout below is the real
+# protection against a wedged worker, and it does not depend on any output at all.
+: "${FLEET_WORKER_STALL_S:=0}"             # 0 = OFF. Only meaningful with a STREAMING output format.
 : "${FLEET_WORKER_TICK_S:=30}"             # emit a liveness line this often. 0 disables.
 : "${FLEET_REVIEW_REVIEWERS:=2}"      # Bun's number. Spend budget on DECORRELATION, not count.
 
@@ -532,7 +548,19 @@ delegate_once() {
 
   run_worker "$wt" "$prof" "$out" "$prompt" "$resume"; rc=$?
   if [ "$rc" -ne 0 ]; then
-    echo "  worker could not be run (exit $rc)" >&2
+    # A KILL BY THE SUPERVISOR IS NOT A TASK FAILURE (#70). Say which, distinctly, or a caller —
+    # a CI run, an experiment — silently counts an infrastructure kill as a result. That is exactly
+    # what happened in #61: healthy workers were killed by a broken stall detector and the trials
+    # recorded them as failures of the thing under test.
+    case "$rc" in
+      124) echo "  WALL-TIMEOUT: the worker exceeded FLEET_WORKER_WALL_TIMEOUT_S (${FLEET_WORKER_WALL_TIMEOUT_S}s) and was killed by the SUPERVISOR." >&2
+           echo "               This is NOT a task failure — the unit never got to finish. Exclude it or re-run it." >&2 ;;
+      125) echo "  STALL-KILL: the worker was killed by the SUPERVISOR (FLEET_WORKER_STALL_S=${FLEET_WORKER_STALL_S}s)." >&2
+           echo "              This is NOT a task failure. NOTE: with --output-format json a healthy worker emits" >&2
+           echo "              NOTHING until it finishes, so stall detection is meaningless there and is OFF by" >&2
+           echo "              default. If you turned it on, this is very likely a FALSE POSITIVE (#70)." >&2 ;;
+      *)   echo "  worker could not be run (exit $rc)" >&2 ;;
+    esac
     [ -s "$out" ] && sed 's/^/    | /' "$out" >&2
     rm -f "$prof" "$out"; return "$rc"
   fi
