@@ -102,6 +102,11 @@ fanout manifest (see examples/fanout.example.json + examples/fanout.schema.json)
            across units, PROVEN by check-claims.py before anything is launched.
   task     the unit's brief, handed to a headless worker in that unit's worktree.
   branch   (optional) override the derived branch name.
+  provides / consumes   (optional, #48) port ids from .fleet/ports.json. Every `consumes` must
+           resolve to EXACTLY ONE `provides` — in this manifest, or to a port already frozen on the
+           base branch — the provides→consumes DAG must be ACYCLIC, and a port's ARTIFACT is
+           READ-ONLY to every unit but its provider. Disjoint FILES do not imply compatible
+           INTERFACES. A manifest without them behaves exactly as it always did. See `fleet spec`.
 
 fanout tuning (both defaults are STARTING POINTS, not measured optima):
   --jobs N / FLEET_FANOUT_JOBS        default min(cpu/2, 4). The real ceiling Bun hit at ~64 agents
@@ -471,7 +476,7 @@ review_base() {  # $1 = worktree, $2 = explicit --base or ""
 # --resume, no transcript, no rationale. Context asymmetry is the point — a reviewer that
 # has read the implementer's justification is no longer an independent observer, it is an
 # audience.
-review_prompt() {  # $1 = scratch dir, $2 = base ref
+review_prompt() {  # $1 = scratch dir, $2 = base ref, $3 = frozen-port block or ""
   cat <<EOF
 You are an ADVERSARIAL REVIEWER. You did NOT write this code, and you are deliberately NOT
 being shown the implementer's reasoning, transcript, session, or intent. Your ONLY job is to
@@ -479,6 +484,16 @@ FIND THE WAY THIS DIFF IS WRONG. Assume it is broken and prove it.
 
 The diff under review (\`git diff $2...HEAD\`) is at:
     $1/diff.patch
+${3:+${3}
+CONFORMANCE TO THE FROZEN PORT IS A REVIEWABLE QUESTION — and a far better-defined one than "is
+this code good?". Bun's reviewers checked conformance to the frozen reference AND behavioural
+equivalence, and you must do BOTH. But DO NOT DEGENERATE INTO A SCHEMA LINTER: the type-checker
+already checks the signatures, deterministically, for free, and a reviewer that only re-does the
+type-checker's job is worth nothing. Your edge is the part a type-checker CANNOT see — a signature
+honoured in form and violated in BEHAVIOUR (an error swallowed where the port says it throws, a
+null returned where the port says non-null, an ordering/lifetime/concurrency assumption the types
+cannot express). Find BUGS. The port is context that makes the bugs easier to name, not a checklist.
+}
 You may READ the whole repository around it. The filesystem is READ-ONLY to you: do not try
 to edit, stage, commit or check anything out. The ONLY directory you can write to is
     $1            (also exported as \$FLEET_REVIEW_SCRATCH)
@@ -561,7 +576,7 @@ review_adjudicate() {  # $1 = finding json, $2 = adj worktree, $3 = baseline gat
 
 review_run() {  # $1 = worktree, $2 = N reviewers, $3 = base ref or ""
   local wt="$1" n="$2" base="$3"
-  local work adj head_sha diff_f i scratch prof out rc f verdict how title
+  local work adj head_sha diff_f i scratch prof out rc f verdict how title ports
   local n_raw=0 n_sub=0 n_disc=0 base_rc=0
 
   base="$(review_base "$wt" "$base")" || exit 1
@@ -582,6 +597,11 @@ review_run() {  # $1 = worktree, $2 = N reviewers, $3 = base ref or ""
     exit 0
   fi
   echo "  diff: $(wc -l < "$diff_f" | tr -d ' ') lines"
+
+  # FREE WIN (#48): hand the reviewer the FROZEN PORT(s) this unit provides/consumes. Empty unless
+  # the worktree is a fanout unit whose manifest declares ports.
+  ports="$("$HERE/fleet-spec.sh" context --worktree "$wt" 2>/dev/null || true)"
+  [ -n "$ports" ] && echo "  ports: the frozen port artifact(s) for this unit are in the reviewer's prompt"
 
   use_review_provider
   if [ "$ACTIVE_MODEL" = "${FLEET_WORKER_MODEL:-}" ] && [ "$ACTIVE_BASE_URL" = "${FLEET_WORKER_BASE_URL:-}" ]; then
@@ -608,7 +628,7 @@ review_run() {  # $1 = worktree, $2 = N reviewers, $3 = base ref or ""
 
     # NO session id, NO --resume, NO transcript: the reviewer gets the diff and nothing else.
     export FLEET_REVIEW_SCRATCH="$scratch"
-    run_worker "$wt" "$prof" "$out" "$(review_prompt "$scratch" "$base")" ""
+    run_worker "$wt" "$prof" "$out" "$(review_prompt "$scratch" "$base" "$ports")" ""
     rc=$?
     if [ "$rc" -ne 0 ]; then
       # INFRASTRUCTURE failure — the reviewer could not be RUN. This, and only this, is fatal.
@@ -736,7 +756,7 @@ fanout_nice_prefix() {
 
 # The unit prompt. A fanout worker is told, in so many words, that it owns a partition and that
 # stepping outside it is the failure mode this whole design exists to prevent.
-fanout_prompt() {  # $1 = unit id, $2 = task, $3 = owns (one glob per line)
+fanout_prompt() {  # $1 = unit id, $2 = task, $3 = owns (one glob per line), $4 = port block or ""
   cat <<EOF
 You are ONE unit of a FANOUT. Several headless agents are working in PARALLEL right now, each in
 its own git worktree, on a partition of this repository that has been PROVEN pairwise disjoint
@@ -754,6 +774,7 @@ done inside your paths, STOP and say so in your final message — that is a mani
 the correct outcome. Do not widen your own scope.
 
 Commit your work on this worktree's branch when you are done.
+${4:-}
 
 TASK:
 $2
@@ -819,7 +840,20 @@ for k, u in enumerate(units):
     branch = u.get("branch") or f"agent/fanout/{slug}/{uid}"
     if not isinstance(branch, str):
         die(f'unit "{uid}": "branch" must be a string')
-    out.append({"id": uid, "owns": norm, "task": task, "branch": branch})
+
+    # PORTS (#48). Optional, and a manifest without them behaves EXACTLY as it did before. They are
+    # carried STRAIGHT THROUGH into the synthesised claims so that check-claims.py — fleet's ONE
+    # ownership prover, extended and never forked — can run the three static interface proofs
+    # (no dangling, no duplicate provider, acyclic DAG) in the SAME pass as the file-disjointness
+    # proof. Disjoint FILES do not imply compatible INTERFACES.
+    ports = {}
+    for rel in ("provides", "consumes"):
+        v = u.get(rel, [])
+        if not isinstance(v, list) or not all(isinstance(p, str) and p for p in v):
+            die(f'unit "{uid}": "{rel}" must be an array of port ids (e.g. ["port:KV"])')
+        ports[rel] = v
+    out.append({"id": uid, "owns": norm, "task": task, "branch": branch,
+                "provides": ports["provides"], "consumes": ports["consumes"]})
 
 # Ownership POLICY (hotFiles / forbidden / branchPattern) comes from the repo's own claims
 # manifest, so a fanout unit cannot own a generated path that a normal claim could not own.
@@ -847,6 +881,8 @@ claims = {
         # Every non-wildcard entry is also declared as a FUTURE file, so check-claims' cross-check
         # ("future file X inside the other's glob") fires even when the path is not yet tracked.
         "newFiles": [g for g in u["owns"] if not WILD.search(g)],
+        "provides": u["provides"],
+        "consumes": u["consumes"],
     } for u in out],
 }
 with open(claims_out, "w") as fh:
@@ -877,16 +913,19 @@ PY
 # channel is the state dir, and its last act is to write `rc` — which is what the scheduler counts
 # to decide a slot has freed up.
 fanout_unit() {  # $1 = state dir, $2 = unit id, $3 = worktree
-  local sd="$1" id="$2" wt="$3" d rc=0 task owns
+  local sd="$1" id="$2" wt="$3" d rc=0 task owns ports
   d="$sd/units/$id"
   task="$(cat "$d/task")"
   owns="$(cat "$d/owns")"
+  # The FROZEN PORTS this unit provides/consumes, inlined into its brief (#48). Empty for a manifest
+  # with no provides/consumes — which is every manifest that predates this.
+  ports="$("$HERE/fleet-spec.sh" context --worktree "$wt" 2>/dev/null || true)"
   printf 'running\n' > "$d/state"
 
   # nice/ionice govern the WORKER; the sandbox governs its WRITES. Neither bounds IOPS on macOS —
   # that is a real, documented gap (Bun needed cgroups for it).
   # shellcheck disable=SC2086
-  ( cd "$wt" && exec $FANOUT_NICE "$HERE/agent-delegate.sh" delegate "$wt" "$(fanout_prompt "$id" "$task" "$owns")" ) \
+  ( cd "$wt" && exec $FANOUT_NICE "$HERE/agent-delegate.sh" delegate "$wt" "$(fanout_prompt "$id" "$task" "$owns" "$ports")" ) \
     > "$d/log" 2>&1 || rc=$?
 
   if [ "$rc" -eq 0 ]; then printf 'done\n' > "$d/state"; else printf 'failed\n' > "$d/state"; fi
@@ -915,15 +954,23 @@ fanout_run() {  # $1 = manifest, $2 = jobs, $3 = dry-run, $4 = resume, $5 = base
   n_units="$(wc -l < "$plan" | tr -d ' ')"
   echo "  units: $n_units   state: ${state#"$ROOT"/}"
 
-  echo "  --- disjointness precondition (check-claims.py — fleet's ownership gate)"
+  echo "  --- disjointness precondition (check-claims.py — fleet's ownership gate + the port proofs)"
   local cc_out cc_rc=0
   cc_out="$state/check-claims.out"
   ( cd "$ROOT" && python3 "$HERE/check-claims.py" "$claims" ) > "$cc_out" 2>&1 || cc_rc=$?
   sed 's/^/    | /' "$cc_out"
   if [ "$cc_rc" -ne 0 ]; then
     echo "" >&2
-    echo "  REFUSED: the units of this manifest are NOT provably disjoint (see the OVERLAP lines" >&2
-    echo "  above, which name the colliding units and the offending path)." >&2
+    echo "  REFUSED: the units of this manifest are NOT provably independent (see the lines above," >&2
+    echo "  which name the colliding units and the offending path or port)." >&2
+    echo "" >&2
+    echo "  OVERLAP … = the units do not own disjoint FILES." >&2
+    echo "  DANGLING PORT / DUPLICATE PROVIDER / CYCLE / FROZEN PORT = the units do not have" >&2
+    echo "  independent INTERFACES (#48). Disjoint files do NOT imply compatible contracts: two" >&2
+    echo "  agents can own non-overlapping paths and still build to incompatible interfaces, and" >&2
+    echo "  that collision only surfaces at INTEGRATION, which is the most expensive place for it." >&2
+    echo "  Anthropic's file lock was fully in force when their 16 agents were still 'stuck solving" >&2
+    echo "  the same task': file-level locking enforces distinct task NAMES, not distinct WORK." >&2
     echo "" >&2
     echo "  This is not a warning that fanout is capping around. Anthropic ran 16 agents at one" >&2
     echo "  task with their C compiler and got: \"every agent would hit the same bug, fix that bug," >&2

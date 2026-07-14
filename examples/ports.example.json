@@ -1,0 +1,16 @@
+{
+  "$schema": "./ports.schema.json",
+  "_comment": "Copy to .fleet/ports.json (or run `fleet spec init`). This is the registry the `provides`/`consumes` ids in examples/fanout.example.json resolve against. Workflow: (1) write the frozen port — a TYPED artifact, never prose; (2) register it here; (3) COMMIT it to the base branch; (4) `fleet spec stub` so consumers compile on day zero; (5) declare provides/consumes in the fanout manifest; (6) `fleet spec check m.json` REFUSES (exit 2) a dangling consumes, two units providing the same port, or a cycle in the provides->consumes DAG. `fleet spec check` also runs inside `fleet_gate` as a fast PRE-GATE and fails any unit whose diff touches a port artifact it does not provide. It is NEVER the oracle: contract tests caught 41/53 (77%) of seeded integration defects (STVR 2025) and missed nearly every value-range bug — 'They could not replace the service black-box tests but only complement them.' The TEST SUITE decides correctness.",
+  "ports": {
+    "port:AST": {
+      "artifact": "src/ports/ast.d.ts",
+      "stub": "src/ports/ast.stub.ts",
+      "description": "The AST node definitions the parser emits and codegen consumes. A .d.ts, because the type-checker can prove conformance to it — for free, deterministically, and better than any reviewer."
+    },
+    "port:KV": {
+      "artifact": "src/ports/kv.pyi",
+      "stub": "src/ports/kv_stub.py",
+      "description": "The key-value store interface. A .pyi: fleet is stack-agnostic — the artifact is whatever YOUR type-checker reads."
+    }
+  }
+}

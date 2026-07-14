@@ -66,6 +66,7 @@ the **worker** does the labour.
 | `fleet delegate loop <wt> --until '<check>' "<task>"` | **self-heal**: run → run the check → feed its failure back → repeat, bounded by `--max-iters` (default 3). Exit 0 when the check goes green; non-zero (escalate) when it never does. |
 | `fleet delegate review <wt> [--reviewers N] [--base <ref>]` | **N=2 adversarial, diff-only, read-only reviewers.** Every finding must ship a runnable repro or patch; the artifact is *executed* and adjudicated by `fleet_gate`. **Advisory — it never blocks.** |
 | `fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]` | **N units, one worktree each, run in parallel — but only if they are PROVABLY DISJOINT.** Refuses (exit 2) a manifest whose `owns` globs overlap. Worktrees created *serially*, work run *concurrently*. Exits non-zero iff a unit failed. |
+| `fleet spec {init\|check\|stub\|amend <port>}` | **THE CONTRACT LAYER.** `fanout` proves the units own disjoint **files**; it proves nothing about their **interfaces**. `spec` freezes a **typed, machine-checkable port** on the base branch, makes it **read-only to every unit but its provider**, and extends the disjointness proof to `provides`/`consumes`: **no dangling port, no duplicate provider, no cycle** — or the manifest is REFUSED. A **pre-gate**, never the oracle. |
 | `fleet fronts [--oracle '<cmd>'] [--shard-by file\|package\|dir] [-o m.json]` | **WORK-FRONT GENERATOR** — writes the manifest `fanout` consumes. Runs the oracle, shards its **failures** into disjoint units. **The oracle decides the decomposition, never a model.** Says **NOT DECOMPOSABLE** and emits ONE unit when the failures don't actually split. |
 
 ```sh
@@ -244,6 +245,97 @@ It emits **exactly one unit** and says so, loudly. Splitting there would *be* th
 failure — and detecting it **before** you burn 16 agents on it is the entire reason to run the oracle
 first. When that happens the answer is not a bigger `--jobs`; it is **a better oracle**.
 
+### `spec` — freeze a **machine-checkable** port, and extend the proof from **files** to **interfaces**
+`fanout` proves the units own **disjoint files**. It proves **nothing about their interfaces**. Two
+agents can own non-overlapping paths and still build to **incompatible contracts** — and the
+collision surfaces only at **integration**, which is the most expensive place for it to surface.
+
+That is not a hypothetical. Anthropic ran 16 agents on a C compiler with their `current_tasks/`
+git-file lock **fully in force**, and got ([source](https://www.anthropic.com/engineering/building-c-compiler)):
+
+> *"Every agent would hit the same bug, fix that bug, and then overwrite each other's changes.
+> Having 16 agents running didn't help because each was stuck solving the same task."*
+
+**File-level locking enforces distinct task *names*, not distinct semantic *work*.** That is the gap.
+
+**"But Bun and Anthropic ran 64 and 16 agents with no contract layer."** They did — and both had a
+**complete frozen reference for free**. Bun's Zig source: **1,448 `.zig` → 1,448 `.rs`, 1:1**, so
+every module boundary and signature was fixed in advance and no interface **negotiation** ever
+happened. Anthropic had the C standard plus GCC as a differential oracle. **Greenfield fanout has
+neither.** Read their success as *"they already had the best possible contract layer"*, not *"you
+don't need one"*.
+
+```sh
+.fleet/bin/fleet spec init                 # scaffold .fleet/ports.json
+.fleet/bin/fleet spec stub                 # a COMPILING stub for every provided port
+.fleet/bin/fleet spec check m.json         # the static proofs — exit 2 on violation
+.fleet/bin/fleet spec amend port:KV        # the ONLY sanctioned way to change a frozen port
+```
+
+**1. The frozen artifact is TYPED, never prose.** Every N-agent project that worked froze something
+a **machine could check** (Zig source; the C standard + a GCC binary; 1.39M assertions). Every
+prose-spec tool has effectively **zero** published evidence. So a port is a `.d.ts`, a `.pyi`, a
+trait file, a protobuf schema, an OpenAPI document — declared in `.fleet/ports.json` and **committed
+to the base branch before fanout**. A prose contract cannot be checked, so it cannot be enforced, so
+it is not a contract: N agents will each read a different one out of it.
+
+```json
+{ "ports": { "port:KV": { "artifact": "src/ports/kv.d.ts", "stub": "src/ports/kv.stub.ts" } } }
+```
+
+**2. `provides:` / `consumes:` + two static proofs — the highest-value part.**
+
+```json
+{ "units": [
+    { "id": "store", "owns": ["src/store/**"], "provides": ["port:KV"],  "task": "…" },
+    { "id": "api",   "owns": ["src/api/**"],   "consumes": ["port:KV"],  "task": "…" } ] }
+```
+`check-claims.py` — fleet's **one** ownership prover, *extended, never forked* — gains three static,
+cheaply-decidable proofs, each refusing the manifest with **exit 2** before anything launches:
+
+| | |
+|-|-|
+| **no dangling, no duplicate provider** | every `consumes` resolves to **exactly one** `provides` — in the manifest, or to a port whose artifact **already exists in git HEAD**. Two units declaring the same `provides` is a **refusal**: they would silently implement the same interface twice. That is Anthropic's duplicate-code tax — *"LLM-written code frequently re-implements existing functionality, so I tasked one agent with coalescing any duplicate code it found."* |
+| **the provides→consumes DAG is ACYCLIC** | a cycle means the units are **not semantically independent** — there is no order in which each can build against a frozen interface. Refused, exactly as an overlapping glob is, and **the cycle is named** in the error. |
+| **the port artifact is READ-ONLY** | any unit whose `owns` **or whose diff** touches a frozen port it does not `provides` is an automatic **gate failure**. This is the one that stops **silent contract drift**: a unit that can rewrite the contract it was handed will, and every sibling is still building against the old one. |
+
+**A manifest with no `provides`/`consumes` behaves exactly as it did before.**
+
+**3. Stub-first bootstrap.** `fleet spec stub` generates a **compiling stub** for every provided port
+on the base branch, so a **consumer** unit typechecks and runs its own tests **on day zero, with no
+provider in existence**. ([STVR 2025](https://doi.org/10.1002/stvr.70003): *"By decoupling the
+consumer and provider via the contract file, the CDC tests don't require running the consumer and
+the provider simultaneously."*) Stub generation is inherently stack-specific, so it is a per-repo
+hook — `fleet_stub_for <artifact> <stub-path>` in `.fleet/config.sh`, alongside `fleet_gate` /
+`fleet_pkg_for`, with a **documented no-op default**. Nothing here is TypeScript-specific.
+
+**4. The oracle stays the test suite. The contract check is a PRE-GATE, never the verdict.**
+Put `fleet spec check` first inside `fleet_gate`; it never decides correctness. The measured ceiling
+(STVR 2025, peer-reviewed): consumer-driven contract tests caught **41/53 seeded integration defects
+(77%)** — and **11 of the 12 misses were value-range changes**, because contracts spot-check single
+values. The authors: *"They could not replace the service black-box tests but only complement them."*
+Same architecture fleet already uses for `review`: **evidence, not verdicts.**
+
+**5. The port goes into the reviewers' prompt.** *"Does this diff conform to the frozen port?"* is a
+far better-defined, evidence-emitting question than *"is this code good?"*. Bun's reviewers checked
+conformance to `PORTING.md`/`LIFETIMES.tsv` **and** behavioural equivalence — and so must ours: the
+prompt says, in so many words, **do not degenerate into a schema-linter**, because the type-checker
+already does that job deterministically and for free. The reviewer's edge is the part a type-checker
+**cannot** see: a signature honoured in form and violated in behaviour.
+
+#### Be honest about the evidence
+- **Nothing in the literature measures the actual question.** There is **no** study of whether a
+  frozen interface reduces integration-failure rate across N parallel coding agents. The STVR
+  numbers are human microservice teams. Every transfer to this setting is **reasoned inference**.
+- The **77%** is a **synthetic, syntactic** defect taxonomy on **one** 4-service project, seeded by
+  an author who is a core developer of that project. It is not a field escape rate.
+- The peer-reviewed base for contract testing is **thin**: a 2025 SLR found **11** peer-reviewed
+  articles in total, no prior SLR, single-case action research, hypotheses **explicitly not**
+  statistically validated.
+
+So: this layer is a **cheap, static refusal** of manifests that provably cannot work, plus a
+read-only rail. It is not a claim that frozen ports make N agents succeed. Treat it as such.
+
 ### The worker is a separate process — that's the whole trick
 `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` are **global per process**. You *cannot* route one
 model tier to one provider and another tier elsewhere inside a single Claude Code process — one
@@ -351,9 +443,11 @@ commands `/claim`, `/release`, `/fleet-update`, `/fleet-uninstall`.
 > *can* run it standalone for CI/advanced use, then do the `config.sh` + `CLAUDE.md` steps it prints.
 
 ## Configure (per-repo `.fleet/config.sh`)
-Two functions are the only stack-specific bits:
+Three functions are the only stack-specific bits:
 - `fleet_bootstrap` — make a fresh worktree runnable (`bun install`, `cargo fetch`, codegen…).
 - `fleet_gate "$@"` — gate the integrated tree (units passed as args; empty = full). Return 0/non-zero.
+- `fleet_stub_for <artifact> <stub>` — emit a **compiling stub** for a frozen port (`fleet spec stub`),
+  so a consumer unit builds on day zero without its provider. Documented **no-op** by default.
 
 Plus optional vars: `FLEET_MAIN`, `FLEET_LOCKFILE`, `FLEET_GENERATED_RE`, `FLEET_BRANCH_RE`, …
 
@@ -364,7 +458,7 @@ its lock instead of having it stolen mid-critical-section.
 
 ## Layout (vendored into your repo)
 ```
-.fleet/{config.sh,lib/,bin/,githooks/,worktrees/,locks/}
+.fleet/{config.sh,ports.json,lib/,bin/,githooks/,worktrees/,locks/}
 .claude/{settings.json,hooks/,commands/,agent-claims.{template,schema}.json}
 WORKTREES.md  .worktreeinclude
 ```
