@@ -9,6 +9,7 @@ case "$cmd" in
   release)       exec "$HERE/agent-release.sh" "$@" ;;
   done)          exec "$HERE/agent-done.sh" "$@" ;;
   reap|reaper)   exec "$HERE/agent-reaper.sh" "$@" ;;
+  delegate)      exec "$HERE/agent-delegate.sh" "$@" ;;
   wt)            exec "$HERE/wt.sh" "$@" ;;
   integrate)     exec "$HERE/fleet-integrate.sh" "$@" ;;
   check)         exec python3 "$HERE/check-claims.py" "$@" ;;
@@ -24,6 +25,8 @@ usage: fleet <command> [args]
   release <issue> [--delete-remote]       abandon a claim (returns issue to agent-ready)
   done <issue> [--force|--delete-remote]   post-MERGE cleanup (issue stays closed)
   reap [--stale H|--force|--delete-remote|--dry-run]   reclaim crashed/abandoned claims
+  delegate {delegate <wt> "<task>"|feedback <wt> "<fix>"|loop <wt> --until '<check>' "<task>"}
+                           hand a work-unit to a headless, OS-sandboxed \`claude -p\` worker
   wt {new <task>|bootstrap|rebase|reap <name>|list|prune}
   integrate <integ-branch> <branch>...   sequential merge + gate + rollback
   check [manifest]         validate the ownership manifest (disjoint claims)
