@@ -17,6 +17,9 @@ fi
 mkdir -p "$(dirname "$WT")"
 
 _coord_lock worktree || { echo "worktree lock timeout" >&2; exit 1; }
-trap '_coord_unlock worktree' EXIT
+# `|| true`: _coord_unlock now returns non-zero if our lock was stolen. In an EXIT trap
+# under `set -e` that would rewrite the script's exit status, failing a `git worktree add`
+# that actually succeeded. The warning on stderr is the signal; the exit code stays ours.
+trap '_coord_unlock worktree || true' EXIT
 git -C "$ROOT" worktree add -b "$BRANCH" "$WT" "$BASE" >&2
 echo "$WT"

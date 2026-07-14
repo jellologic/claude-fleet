@@ -63,12 +63,12 @@ if [ -n "$OWNS" ]; then
   _coord_lock claims || { rm -f "$GLOG"; rollback_claim; die "ownership gate: lock timeout"; }
   [ -f "$MAN" ] || cp "$ROOT/.claude/agent-claims.template.json" "$MAN"
   if ! python3 "$HERE/claims-edit.py" "$MAN" add "issue-$ISSUE" "$BRANCH" "$OWNS"; then
-    _coord_unlock claims; rm -f "$GLOG"; rollback_claim; die "ownership gate: could not record claim"; fi
+    _coord_unlock claims || true;rm -f "$GLOG"; rollback_claim; die "ownership gate: could not record claim"; fi
   if python3 "$HERE/check-claims.py" "$MAN" >"$GLOG" 2>&1; then
-    _coord_unlock claims; rm -f "$GLOG"; echo "    ownership registered (disjoint)."
+    _coord_unlock claims || true;rm -f "$GLOG"; echo "    ownership registered (disjoint)."
   else
     python3 "$HERE/claims-edit.py" "$MAN" remove "issue-$ISSUE" 2>/dev/null || true
-    _coord_unlock claims; grep -E 'OVERLAP|HOT-FILE|forbidden|violation' "$GLOG" | head -5 | sed 's/^/    /' >&2
+    _coord_unlock claims || true;grep -E 'OVERLAP|HOT-FILE|forbidden|violation' "$GLOG" | head -5 | sed 's/^/    /' >&2
     rm -f "$GLOG"; rollback_claim; die "claim #$ISSUE REJECTED: declared files overlap an active claim"
   fi
 fi
