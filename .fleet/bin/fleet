@@ -44,15 +44,19 @@ usage: fleet <command> [args]
                            \`cargo check\` errors "grouped by crate"). If every failure traces to one
                            file/package, it says NOT DECOMPOSABLE and emits ONE unit rather than
                            manufacture fake parallelism — that is the Anthropic 16-agent failure.
-  spec {init|check [manifest]|stub [manifest]|amend <port>|context}
+  spec {init|check [manifest]|conform [manifest]|stub [manifest]|amend <port>|context}
                            the CONTRACT layer: freeze a TYPED, MACHINE-CHECKABLE port (a .d.ts /
                            .pyi / trait / protobuf / OpenAPI file — NEVER prose) on the base branch,
                            and extend the disjointness proof from FILES to INTERFACES. \`check\`
                            REFUSES (exit 2) a manifest with a dangling \`consumes\`, two units
                            \`provides\`-ing the same port, or a CYCLE in the provides→consumes DAG,
                            and enforces that a frozen port artifact is READ-ONLY to every unit but
-                           its provider. Run it INSIDE \`fleet_gate\` as a fast PRE-GATE: it is
-                           EVIDENCE, never the verdict — the TEST SUITE stays the oracle.
+                           its provider. \`conform\` CHECKS THE CODE AGAINST THE PORT via the per-repo
+                           \`fleet_spec_conform\` hook (exit 2 on drift) — without it a frozen port is
+                           DECORATIVE: nothing checks the implementation matches it, and \`spec\` says
+                           so loudly when the hook is unset (#57). Run them INSIDE \`fleet_gate\` as a
+                           fast PRE-GATE: they are EVIDENCE, never the verdict — the TEST SUITE stays
+                           the oracle.
   wt {new <task>|bootstrap|rebase|reap <name>|list|prune}
   integrate <integ-branch> [<branch>...] [--cohort <branch>... [--] <branch>...]
                            sequential merge + gate + rollback. A bare branch is gated ALONE and

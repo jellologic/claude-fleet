@@ -66,7 +66,7 @@ the **worker** does the labour.
 | `fleet delegate loop <wt> --until '<check>' "<task>"` | **self-heal**: run → run the check → feed its failure back → repeat, bounded by `--max-iters` (default 3). Exit 0 when the check goes green; non-zero (escalate) when it never does. |
 | `fleet delegate review <wt> [--reviewers N] [--base <ref>]` | **N=2 adversarial, diff-only, read-only reviewers.** Every finding must ship a runnable repro or patch; the artifact is *executed* and adjudicated by `fleet_gate`. **Advisory — it never blocks.** |
 | `fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]` | **N units, one worktree each, run in parallel — but only if they are PROVABLY DISJOINT.** Refuses (exit 2) a manifest whose `owns` globs overlap. Worktrees created *serially*, work run *concurrently*. Exits non-zero iff a unit failed. |
-| `fleet spec {init\|check\|stub\|amend <port>}` | ⚠️ **EXPERIMENTAL — unvalidated, see the warning below.** `fanout` proves the units own disjoint **files**; it proves nothing about their **interfaces**. `spec` freezes a **typed, machine-checkable port** on the base branch, makes it **read-only to every unit but its provider**, and extends the disjointness proof to `provides`/`consumes`: **no dangling port, no duplicate provider, no cycle** — or the manifest is REFUSED. A **pre-gate**, never the oracle. |
+| `fleet spec {init\|check\|conform\|stub\|amend <port>}` | ⚠️ **EXPERIMENTAL — unvalidated, see the warning below.** `fanout` proves the units own disjoint **files**; it proves nothing about their **interfaces**. `spec` freezes a **typed, machine-checkable port** on the base branch, makes it **read-only to every unit but its provider**, and extends the disjointness proof to `provides`/`consumes`: **no dangling port, no duplicate provider, no cycle** — or the manifest is REFUSED. `conform` then checks the **implementation against the port** (`fleet_spec_conform`; exit 2 on drift) — **without it a frozen port is DECORATIVE**, and `spec` says so loudly (#57). A **pre-gate**, never the oracle. |
 | `fleet fronts [--oracle '<cmd>'] [--shard-by file\|package\|dir] [-o m.json]` | **WORK-FRONT GENERATOR** — writes the manifest `fanout` consumes. Runs the oracle, shards its **failures** into disjoint units. **The oracle decides the decomposition, never a model.** Says **NOT DECOMPOSABLE** and emits ONE unit when the failures don't actually split. |
 
 ```sh
@@ -302,9 +302,22 @@ first. When that happens the answer is not a bigger `--jobs`; it is **a better o
 > under-specified, or overload-missing port file is the *normal* state of a hand-maintained
 > interface. **A rotting `.pyi` may be worse than no `.pyi` at all.**
 >
-> **Also**: nothing currently checks that an implementation *conforms* to its port
-> ([#57](https://github.com/jellologic/claude-fleet/issues/57)) — without a `fleet_spec_conform`
-> hook wired into your gate, the port is **decorative**.
+> **The conformance check now exists — and that changes what is at stake, not what is proven.**
+> `fleet spec conform` + the `fleet_spec_conform` hook ([#57](https://github.com/jellologic/claude-fleet/issues/57))
+> compare the **implementation** against the frozen port and fail the gate on drift. Until it
+> existed, nothing did: a unit could `provides` a port, never touch the artifact (satisfying the
+> read-only rule), and ship a completely different interface. **That is why the pilot above measured
+> nothing — the treatment was never applied.** Its gate was `py_compile` + an integration test, with
+> no type-checker, so the "typed port" arm was a typed port *nobody checked*. **A port with no
+> conformance check is decorative**, and `fleet spec` now says so, loudly, whenever the hook is unset.
+> This makes [#61](https://github.com/jellologic/claude-fleet/issues/61) — the experiment that would
+> settle the feature — **runnable**. It is **not evidence the feature works.** Nothing here is
+> evidence yet.
+>
+> **And it cuts the other way too:** a conformance check turns a decorative port into a **real** one,
+> which means a **stale port now actively FAILS THE GATE** — that is the intended behaviour, and it
+> is exactly the failure mode the **−97%** result above warns about. **Keep your ports current, or
+> turn the hook off.** A rotting `.pyi` wired into your gate is the worst of both worlds.
 >
 > Use `fanout` + a precise prose brief. That is what the evidence supports today.
 
@@ -335,6 +348,7 @@ don't need one"*.
 .fleet/bin/fleet spec init                 # scaffold .fleet/ports.json
 .fleet/bin/fleet spec stub                 # a COMPILING stub for every provided port
 .fleet/bin/fleet spec check m.json         # the static proofs — exit 2 on violation
+.fleet/bin/fleet spec conform m.json       # THE CODE vs THE PORT — exit 2 on drift
 .fleet/bin/fleet spec amend port:KV        # the ONLY sanctioned way to change a frozen port
 ```
 
@@ -374,6 +388,37 @@ consumer and provider via the contract file, the CDC tests don't require running
 the provider simultaneously."*) Stub generation is inherently stack-specific, so it is a per-repo
 hook — `fleet_stub_for <artifact> <stub-path>` in `.fleet/config.sh`, alongside `fleet_gate` /
 `fleet_pkg_for`, with a **documented no-op default**. Nothing here is TypeScript-specific.
+
+**3b. The CONFORMANCE check — the thing that makes a port a port.** ([#57](https://github.com/jellologic/claude-fleet/issues/57))
+The three proofs above are about the **manifest graph**. The read-only rule is about the **diff**.
+**None of them look at the code.** A unit can `provides: ["port:Store"]`, leave `ports/store.pyi`
+untouched — so the read-only rule passes — and implement a **completely different interface**, and
+every proof stays green. That is not hypothetical: it is exactly what the pilot experiment produced
+(port: `put`/`get`/`all`; implementation: `add`/`get`/`complete`/`list`) and exactly what its gate
+failed to notice. **A frozen port that nothing checks is a suggestion, not a contract.**
+
+```sh
+# .fleet/config.sh — stack-agnostic, exactly like fleet_gate / fleet_pkg_for / fleet_stub_for
+fleet_spec_conform() {   # $1 = the frozen port artifact, $2 = the unit's `owns` paths
+  python3 .fleet/bin/spec-conform.py "$1" $2   # shipped, stdlib-only: a .pyi vs the impl
+  # or: mypy --strict $2 / pyright / npx tsc --noEmit / cargo check / protoc --lint
+}
+```
+`fleet spec conform` runs it per unit, for every port it `provides` (`--consumes` for the other
+side), and **exits 2 naming the port, the unit, and what drifted**. It is shipped **undefined, not
+as a no-op**: a no-op default passes silently, which is indistinguishable from a real check that
+found nothing. With no hook configured, `spec check`/`conform` print a **loud warning** — *"the
+frozen port is DECORATIVE"* — every single run. A port with no conformance check must never look
+like a port that has one.
+
+fleet ships a **working default for Python** (`.fleet/bin/spec-conform.py`, **stdlib only** — no
+mypy, no PEP 668 fight): it parses the `.pyi` with `ast`, loads the implementation (by import, with
+an `ast` fallback), and compares **classes, methods, and parameter lists**. It is the checker of
+**last resort** — it compares *shapes*, not types, and never behaviour. **If you have mypy or tsc,
+point the hook at them: they are strictly stronger.**
+
+> ⚠️ Enforcing conformance means a **stale port now fails the gate**. That is intended — and it is
+> the **−97%** failure mode in the warning box above. Keep your ports current, or turn the hook off.
 
 **4. The oracle stays the test suite. The contract check is a PRE-GATE, never the verdict.**
 Put `fleet spec check` first inside `fleet_gate`; it never decides correctness. The measured ceiling
@@ -512,11 +557,15 @@ commands `/claim`, `/release`, `/fleet-update`, `/fleet-uninstall`.
 > *can* run it standalone for CI/advanced use, then do the `config.sh` + `CLAUDE.md` steps it prints.
 
 ## Configure (per-repo `.fleet/config.sh`)
-Three functions are the only stack-specific bits:
+Four functions are the only stack-specific bits:
 - `fleet_bootstrap` — make a fresh worktree runnable (`bun install`, `cargo fetch`, codegen…).
 - `fleet_gate "$@"` — gate the integrated tree (units passed as args; empty = full). Return 0/non-zero.
 - `fleet_stub_for <artifact> <stub>` — emit a **compiling stub** for a frozen port (`fleet spec stub`),
   so a consumer unit builds on day zero without its provider. Documented **no-op** by default.
+- `fleet_spec_conform <artifact> <owns…>` — check the **implementation against the frozen port**
+  (`fleet spec conform`): `mypy --strict` / `tsc --noEmit` / `cargo check` / the shipped stdlib
+  `spec-conform.py`. Shipped **undefined**, not as a no-op — a silent pass is the failure it exists
+  to prevent — and `fleet spec` warns **loudly** while it is unset: the port is **decorative** (#57).
 
 Plus optional vars: `FLEET_MAIN`, `FLEET_LOCKFILE`, `FLEET_GENERATED_RE`, `FLEET_BRANCH_RE`, …
 

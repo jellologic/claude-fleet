@@ -32,9 +32,28 @@
 # replace the service black-box tests but only complement them." The ORACLE STAYS THE TEST SUITE.
 # This mirrors exactly what fleet already does with `review`: evidence, not verdicts.
 #
+# ── A PORT NOTHING CHECKS IS DECORATIVE (#57) ─────────────────────────────────────────────
+# The three static proofs above are about the MANIFEST GRAPH — dangling / duplicate provider /
+# cycle — and the read-only rule is about the DIFF. NONE of them look at the CODE. A unit can
+# `provides: ["port:Store"]`, never touch ports/store.pyi (so the read-only rule is satisfied), and
+# implement a COMPLETELY DIFFERENT interface. Until something compares the implementation to the
+# contract, a frozen port is prose the worker can read plus a file it must not edit: a SUGGESTION.
+#
+# That is not hypothetical — it is what the #50 experiment produced and failed to notice. Its gate
+# was py_compile + an integration test, with NO type-checker: the port declared put/get/all, the
+# implementation shipped add/get/complete/list, and the gate was GREEN. The experiment's null result
+# ("a typed port is no better than prose") measured nothing, because the treatment was never applied.
+#
+# `fleet spec conform` closes that hole, through the same stack-agnostic hook pattern as fleet_gate
+# / fleet_pkg_for / fleet_stub_for: `fleet_spec_conform <artifact> <owns…>` in .fleet/config.sh —
+# mypy --strict / pyright / tsc --noEmit / cargo check / protoc --lint / the shipped spec-conform.py.
+# With NO hook configured we say so LOUDLY, every time, because a port with no conformance check
+# must never look like a port that has one.
+#
 # usage:
 #   fleet spec init                      scaffold .fleet/ports.json
 #   fleet spec check [manifest]          the static proofs + the frozen-port diff proof (exit 2)
+#   fleet spec conform [manifest]        CHECK THE CODE AGAINST THE PORT (exit 2 on drift)
 #   fleet spec stub [manifest]           generate a COMPILING stub for every `provides` port
 #   fleet spec amend <port> [--manifest] the ONLY sanctioned way to change a frozen port
 #   fleet spec context [--worktree wt]   the port block fed to fanout workers and reviewers
@@ -69,6 +88,15 @@ usage: fleet spec <verb> [args]
                               Runs inside `fleet_gate` as a fast PRE-GATE. It is NOT the oracle:
                               the TEST SUITE is. Contract tests catch ~77% of integration defects
                               (STVR 2025) and miss every value-range bug. Evidence, not verdicts.
+  conform [manifest]          CHECK THE IMPLEMENTATION AGAINST THE PORT — the only thing that makes
+                              a frozen port a CONTRACT rather than a suggestion. For every unit, for
+                              every port it `provides` (--consumes: also the ones it consumes), run
+                              the per-repo hook `fleet_spec_conform <artifact> <owns…>` in
+                              .fleet/config.sh (mypy --strict / pyright / tsc --noEmit / cargo check
+                              / the shipped .fleet/bin/spec-conform.py). Exit 2 on drift, NAMING the
+                              port, the unit, and WHAT drifted.
+                              With NO hook configured this says so LOUDLY: the port is DECORATIVE,
+                              nothing checks your implementation matches it. (#57)
   stub [manifest] [--force]   generate a COMPILING stub for every `provides` port, so a CONSUMER
                               unit typechecks and runs its own tests on DAY ZERO without the
                               provider existing. Stack-agnostic: the generator is the per-repo hook
@@ -137,6 +165,166 @@ for u in units:
 PY
 }
 
+# ── conform — THE CONFORMANCE CHECK (#57) ────────────────────────────────────────────────
+# Everything else `fleet spec` does treats the port as a DOCUMENT: it shows it to the worker, it
+# forbids editing it, it stubs it. Only this compares it to the CODE. Without it, `provides:` is
+# bookkeeping — and that is precisely how the #50 experiment ran a "typed port" arm with the type
+# check switched off, and concluded from the resulting null that typing does not help.
+
+# Emit lines: "<unit>\t<rel>\t<port>\t<artifact>\t<owns…>" for the units/ports to check.
+conform_rows() {  # $1 = manifest, $2 = unit filter ("" = all), $3 = 1 to include `consumes`
+  python3 - "$1" "$2" "$3" "$PORTS" <<'PY'
+import json, sys
+manifest, only, withcons, ports = sys.argv[1:5]
+try:
+    reg = json.load(open(ports)).get("ports", {})
+except Exception:
+    reg = {}
+try:
+    units = json.load(open(manifest)).get("units", [])
+except Exception:
+    units = []
+rels = ("provides", "consumes") if withcons == "1" else ("provides",)
+for u in units:
+    uid = u.get("id") or ""
+    if only and uid != only:
+        continue
+    owns = " ".join(g for g in (u.get("owns") or []) if isinstance(g, str))
+    for rel in rels:
+        for p in (u.get(rel) or []):
+            art = (reg.get(p) or {}).get("artifact", "")
+            if art:
+                print("%s\t%s\t%s\t%s\t%s" % (uid, rel, p, art, owns))
+PY
+}
+
+# THE LOUD DEFAULT. A port with no conformance check must NEVER look like a port that has one.
+# This is the single most important behaviour in #57: silence here is what made the frozen port in
+# the #50 experiment decorative, and nothing in the output said so.
+conform_no_hook_warning() {
+  cat >&2 <<'EOF'
+
+  ================================ WARNING: DECORATIVE PORT ================================
+  WARNING: no fleet_spec_conform hook configured — the frozen port is DECORATIVE.
+  Nothing checks that your implementation matches it. See #57.
+
+  `fleet spec` currently SHOWS the port to the worker, makes it READ-ONLY, and STUBS it.
+  It does NOT check that the code conforms. A unit can `provides` a port, never touch the
+  artifact (so the read-only rule passes), and implement a COMPLETELY DIFFERENT interface —
+  and every proof above will still be green. That is a SUGGESTION, not a contract.
+
+  Fix it — one hook in .fleet/config.sh, exactly like fleet_gate / fleet_stub_for:
+    fleet_spec_conform() {   # $1 = the frozen port artifact, $2 = the unit's owns paths
+      python3 .fleet/bin/spec-conform.py "$1" $2     # shipped, stdlib-only, .pyi vs impl
+      # or: mypy --strict $2 / pyright / tsc --noEmit / cargo check / protoc --lint
+    }
+  Then call `fleet spec conform` FIRST inside fleet_gate — a fast PRE-GATE. The test suite
+  stays the oracle: contract checks catch ~77% of integration defects (STVR 2025) and miss
+  value-range bugs systematically.
+  =========================================================================================
+EOF
+}
+
+# 0 = a hook is configured; 1 = none (and the warning has been printed).
+conform_hook_ready() {
+  # shellcheck disable=SC1091
+  [ -f "$MAIN_ROOT/.fleet/config.sh" ] && . "$MAIN_ROOT/.fleet/config.sh"
+  [ "$(type -t fleet_spec_conform 2>/dev/null || true)" = "function" ] || return 1
+  return 0
+}
+
+# Run the hook for every (unit, port) row. Returns 2 if anything drifted.
+conform_run() {  # $1 = manifest, $2 = unit filter, $3 = include consumes, $4 = worktree/cwd
+  local manifest="$1" only="$2" withcons="$3" wt="$4"
+  local uid rel pid art owns rc=0 n=0 out hrc
+  while IFS="$(printf '\t')" read -r uid rel pid art owns; do
+    [ -n "${art:-}" ] || continue
+    if [ ! -f "$wt/$art" ]; then
+      echo "      skip  $uid $rel $pid — artifact $art not present on this branch"
+      continue
+    fi
+    n=$((n + 1))
+    hrc=0
+    out="$( cd "$wt" && fleet_spec_conform "$art" "$owns" 2>&1 )" || hrc=$?
+    if [ "$hrc" -eq 0 ]; then
+      echo "      ok    $uid $rel $pid → $art"
+      [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/        | /'
+      continue
+    fi
+    echo "" >&2
+    echo "  PORT CONFORMANCE FAILURE: unit '$uid' does NOT conform to $pid ($art)." >&2
+    echo "  It $rel this port; its code lives in: ${owns:-(no owns declared)}" >&2
+    echo "" >&2
+    printf '%s\n' "$out" | sed 's/^/    | /' >&2
+    echo "" >&2
+    echo "  The port is the contract every SIBLING unit is building against RIGHT NOW. An" >&2
+    echo "  implementation that drifts from it compiles, passes its own tests, and then fails at" >&2
+    echo "  INTEGRATION — the most expensive place for it to fail, and the entire failure this" >&2
+    echo "  layer exists to prevent. Conform to the port." >&2
+    echo "" >&2
+    echo "  If the PORT is genuinely wrong, that is a MANIFEST bug, not a unit bug: stop, say so," >&2
+    echo "  and let the orchestrator run \`fleet spec amend $pid\` on the base branch — which" >&2
+    echo "  re-runs every consumer against the new contract." >&2
+    rc=2
+  done <<EOF
+$(conform_rows "$manifest" "$only" "$withcons")
+EOF
+  [ "$n" -eq 0 ] && echo "      (no port with an artifact to check)"
+  return "$rc"
+}
+
+# The conformance STAGE of `fleet spec check` — so the pre-gate people already run inside
+# fleet_gate gains the check, and so a repo with NO hook is TOLD, every single time, that its port
+# is decorative. Silence is the failure mode: a port with no conformance check must never look like
+# a port that has one.
+check_conform_stage() {  # $1 = manifest, $2 = unit ("" = no unit context)
+  if ! conform_hook_ready; then
+    conform_no_hook_warning
+    echo "  --- CONFORMANCE: NOT CHECKED. No fleet_spec_conform hook — this port is DECORATIVE."
+    return 0
+  fi
+  if [ -z "$2" ] || [ -z "${1:-}" ] || [ ! -f "${1:-/nonexistent}" ]; then
+    echo "  --- conformance: no unit context — run \`fleet spec conform <manifest>\` for a full sweep."
+    return 0
+  fi
+  echo "  --- conformance pre-gate: unit '$2' vs its frozen port(s) (via fleet_spec_conform)"
+  conform_run "$1" "$2" 0 "$PWD" || exit 2
+}
+
+cmd_conform() {
+  local manifest="" withcons=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --consumes) withcons=1; shift ;;
+    -*)         die2 "unknown arg: $1" ;;
+    *)          manifest="$1"; shift ;;
+  esac; done
+
+  echo "fleet spec conform"
+  if ! conform_hook_ready; then
+    conform_no_hook_warning
+    echo "  no fleet_spec_conform hook — NOTHING was checked. The port is DECORATIVE."
+    return 0
+  fi
+
+  spec_context "$PWD"
+  [ -n "$manifest" ] || manifest="$SPEC_MANIFEST"
+  if [ -z "$manifest" ] || [ ! -f "$manifest" ]; then
+    echo "  no manifest (and no fanout unit context) — nothing to conform. Pass one:"
+    echo "    fleet spec conform <manifest.json>"
+    return 0
+  fi
+  if [ -n "$SPEC_UNIT" ]; then
+    echo "  --- unit '$SPEC_UNIT' vs its frozen port(s) — via the fleet_spec_conform hook"
+  else
+    echo "  --- every unit in $manifest vs its frozen port(s) — via the fleet_spec_conform hook"
+  fi
+  conform_run "$manifest" "$SPEC_UNIT" "$withcons" "$PWD" || exit 2
+  echo "  OK — the implementation CONFORMS to the frozen port(s)."
+  echo "  This is a PRE-GATE, not the oracle. A conformance check compares SHAPES; the TEST SUITE"
+  echo "  decides correctness. Contract checks caught 77% of seeded integration defects (STVR 2025)"
+  echo "  and missed nearly every value-range bug: they complement the black-box tests, never replace."
+}
+
 # ── check ────────────────────────────────────────────────────────────────────────────────
 cmd_check() {
   local manifest="${1:-}" rc=0 art rel pid changed
@@ -169,6 +357,7 @@ cmd_check() {
   if [ -z "$SPEC_UNIT" ]; then
     echo "  --- no fanout unit context (branch is not agent/fanout/<slug>/<id>) — the frozen-port"
     echo "      diff proof does not apply here. Ports are read-only to UNITS; the base branch owns them."
+    check_conform_stage "$manifest" ""
     echo "  OK"
     return 0
   fi
@@ -215,6 +404,13 @@ PY
 EOF
   [ "$rc" -eq 0 ] || exit 2
   echo "      no frozen port artifact was touched by '$SPEC_UNIT'."
+
+  # 3) THE CONFORMANCE CHECK (#57). The diff proof above proves the unit did not REWRITE the
+  #    contract. It proves NOTHING about whether the unit HONOURED it — an untouched port and an
+  #    unrelated implementation are perfectly compatible with every proof so far. This is the one
+  #    that makes the port a contract instead of a suggestion.
+  check_conform_stage "$SPEC_MANIFEST" "$SPEC_UNIT"
+
   echo "  OK — this is a PRE-GATE, not the oracle. The TEST SUITE decides correctness: contract"
   echo "  checks caught 77% of seeded integration defects (STVR 2025) and missed every value-range"
   echo "  bug. They complement the black-box tests; they never replace them."
@@ -458,6 +654,7 @@ cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$cmd" in
   init)    cmd_init "$@" ;;
   check)   cmd_check "$@" ;;
+  conform) cmd_conform "$@" ;;
   stub)    cmd_stub "$@" ;;
   amend)   cmd_amend "$@" ;;
   context) cmd_context "$@" ;;
