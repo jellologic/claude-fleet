@@ -65,6 +65,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 : "${FLEET_DELEGATE_RETRIES:=4}"      # attempts per worker invocation (back-pressure, RFC part 3)
 : "${FLEET_DELEGATE_MAX_ITERS:=3}"    # default `loop --max-iters`
 : "${FLEET_WORKER_TIMEOUT_MS:=3000000}"
+# ── worker liveness (#58) ── API_TIMEOUT_MS is an *API* timeout: a worker wedged in a tool
+# loop never trips it. These bound the PROCESS.
+: "${FLEET_WORKER_WALL_TIMEOUT_S:=3600}"   # hard ceiling on a single worker invocation
+: "${FLEET_WORKER_STALL_S:=600}"           # no output for this long ⇒ stalled ⇒ killed. 0 disables.
+: "${FLEET_WORKER_TICK_S:=30}"             # emit a liveness line this often. 0 disables.
 : "${FLEET_REVIEW_REVIEWERS:=2}"      # Bun's number. Spend budget on DECORRELATION, not count.
 
 usage() {
@@ -354,6 +359,76 @@ print(cur if not isinstance(cur,(dict,list)) else json.dumps(cur))
 PY
 }
 
+# ── WORKER LIFECYCLE (#58) ────────────────────────────────────────────────────────────
+# A worker is a SEPARATE PROCESS that we must own for its whole life. Before this, the
+# worker inherited our process group and NOTHING ever killed it: when the supervisor died
+# — Ctrl-C, a harness/CI timeout, an interrupted `fanout`, a closed terminal — the worker
+# was ORPHANED and kept running with --dangerously-skip-permissions, still writing into the
+# worktree. Reproduced: kill the supervisor, and the worker wrote a file afterwards.
+#
+# The OS sandbox does NOT save you here. It confines writes TO THE WORKTREE — which is
+# exactly where the zombie writes. Confinement is not lifecycle. A zombie can mutate a unit
+# AFTER `fanout` recorded it done and AFTER `fleet integrate` merged it; the commit and the
+# working tree then disagree and nothing notices.
+#
+# So: every worker is put in its OWN SESSION (os.setsid → pid == pgid), its group id is
+# recorded, and EVERY exit path kills the whole GROUP — not just the leader, because
+# `claude` spawns children (bash tools, python, a nested claude) that would otherwise
+# orphan in turn.
+_WORKER_PGIDS=""          # bash 3.2: a space-separated list, not an array
+
+_kill_group() {  # $1 = pgid. TERM the group, grace, then KILL. Never leave a stray.
+  local g="$1" i=0
+  [ -n "$g" ] || return 0
+  kill -TERM "-$g" 2>/dev/null || true
+  while kill -0 "-$g" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.25; i=$((i + 1)); done
+  kill -KILL "-$g" 2>/dev/null || true
+}
+
+reap_workers() {  # every exit path lands here
+  local g
+  for g in $_WORKER_PGIDS; do _kill_group "$g"; done
+  _WORKER_PGIDS=""
+}
+trap 'reap_workers' EXIT
+trap 'echo "  interrupted — killing worker(s)" >&2; reap_workers; exit 130' INT TERM HUP
+
+# Watch a live worker: wall-clock timeout + stall detection + a heartbeat the operator (and
+# any other process) can read. API_TIMEOUT_MS is an *API* timeout — a worker wedged in a tool
+# loop never trips it, so it is not a liveness signal.
+_watch_worker() {  # $1 = pid(=pgid)  $2 = outfile  $3 = errfile  $4 = heartbeat path
+  local pid="$1" out="$2" errf="$3" hb="$4"
+  local start now size last_size=-1 last_change quiet elapsed
+  start="$(date +%s)"; last_change="$start"
+  while kill -0 "$pid" 2>/dev/null; do
+    now="$(date +%s)"; elapsed=$((now - start))
+    size=$(( $(wc -c < "$out" 2>/dev/null || echo 0) + $(wc -c < "$errf" 2>/dev/null || echo 0) ))
+    if [ "$size" -ne "$last_size" ]; then last_size="$size"; last_change="$now"; fi
+    quiet=$((now - last_change))
+
+    # Heartbeat: mtime = last sign of life. Any process can read this, including a
+    # supervisor that restarted — it is what lets a stray be detected and reaped later.
+    [ -n "$hb" ] && printf 'pgid=%s elapsed=%ss quiet=%ss bytes=%s\n' \
+      "$pid" "$elapsed" "$quiet" "$size" > "$hb" 2>/dev/null
+
+    if [ "$elapsed" -ge "$FLEET_WORKER_WALL_TIMEOUT_S" ]; then
+      echo "  WALL TIMEOUT after ${elapsed}s — killing the worker's process group" >&2
+      _kill_group "$pid"; return 124
+    fi
+    if [ "$FLEET_WORKER_STALL_S" -gt 0 ] && [ "$quiet" -ge "$FLEET_WORKER_STALL_S" ]; then
+      echo "  STALLED: no output for ${quiet}s (elapsed ${elapsed}s) — killing the process group" >&2
+      _kill_group "$pid"; return 125
+    fi
+    # Periodic liveness line, so N parallel workers are not a silent black box.
+    if [ "$FLEET_WORKER_TICK_S" -gt 0 ] && [ $((elapsed % FLEET_WORKER_TICK_S)) -eq 0 ] \
+       && [ "$elapsed" -gt 0 ]; then
+      echo "    · worker alive ${elapsed}s (quiet ${quiet}s, ${size}B)" >&2
+    fi
+    sleep 1
+  done
+  wait "$pid" 2>/dev/null; return $?
+}
+
 # run_worker <worktree> <profile> <outfile> <prompt> [resume_session_id]
 # → 0 on a worker that ran, non-zero on a worker that could not be run. The JSON body
 #   lands in <outfile>. Retries ONLY transient transport failures, with jittered
@@ -361,10 +436,11 @@ PY
 #   429/529 and a transient overload must not kill a unit).
 run_worker() {
   local wt="$1" prof="$2" out="$3" prompt="$4" resume="${5:-}"
-  local attempt=1 rc errf combined sleep_s tok
+  local attempt=1 rc errf combined sleep_s tok wpid hb
 
   errf="$(mktemp)"
   tok="$(worker_token)"
+  hb="$(state_dir "$wt")/heartbeat"; mkdir -p "$(dirname "$hb")" 2>/dev/null || true
 
   while :; do
     : > "$out"
@@ -383,16 +459,29 @@ run_worker() {
       fi
       export API_TIMEOUT_MS="$FLEET_WORKER_TIMEOUT_MS"
       cd "$wt" || exit 97
+      # os.setsid() makes this the leader of a NEW session, so its pid IS its pgid and we can
+      # kill the entire tree by group. `setsid(1)` is absent on macOS; python3 is already a
+      # hard dependency of fleet, so this is the portable form.
       # shellcheck disable=SC2086
       if [ -n "$resume" ]; then
-        exec $SANDBOX_ARGV claude --resume "$resume" -p "$prompt" \
+        exec python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+          $SANDBOX_ARGV claude --resume "$resume" -p "$prompt" \
           --output-format json --dangerously-skip-permissions $FLEET_DELEGATE_CLAUDE_ARGS
       else
-        exec $SANDBOX_ARGV claude -p "$prompt" \
+        exec python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+          $SANDBOX_ARGV claude -p "$prompt" \
           --output-format json --dangerously-skip-permissions $FLEET_DELEGATE_CLAUDE_ARGS
       fi
-    ) > "$out" 2> "$errf"
+    ) > "$out" 2> "$errf" &
+    wpid=$!
+    _WORKER_PGIDS="$_WORKER_PGIDS $wpid"     # so EVERY exit path can reap it
+    printf '%s\n' "$wpid" > "$(dirname "$hb")/pgid" 2>/dev/null || true
+
+    _watch_worker "$wpid" "$out" "$errf" "$hb"
     rc=$?
+    _kill_group "$wpid"                       # belt and braces: never leave the group alive
+    _WORKER_PGIDS="$(printf '%s' "$_WORKER_PGIDS" | tr ' ' '\n' | grep -v "^${wpid}$" | tr '\n' ' ')"
+    rm -f "$(dirname "$hb")/pgid" 2>/dev/null || true
 
     [ "$rc" -eq 0 ] && { cat "$errf" >&2; rm -f "$errf"; return 0; }
 
