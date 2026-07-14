@@ -5,6 +5,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- **`fleet delegate` — delegation as a fleet primitive.** Hands a self-contained work-unit to a
+  HEADLESS `claude -p` worker running inside a fleet worktree; the orchestrator (a stronger model,
+  or a human) reviews, the worker does the labour. Three verbs: `delegate <wt> "<task>"` (one unit,
+  `--output-format json`, capturing `session_id`/`result`/cost, session persisted under
+  `.fleet/delegate/<wt>/session`), `feedback <wt> "<fix…>"` (`--resume` that session — continues IN
+  CONTEXT rather than cold), and `loop <wt> --until '<check>' "<task>"` (self-heal: run → check →
+  feed the failure back → repeat, bounded by `--max-iters`, default 3; exit 0 when the check goes
+  green, non-zero/escalate when it never does). The `--until` check is the orchestrator's own
+  oracle — correctness is gated by it, not by trusting the worker. (#23)
+- **Provider-agnostic workers.** `FLEET_WORKER_{BASE_URL,TOKEN_FILE,TOKEN,MODEL,TIMEOUT_MS}` are
+  mapped onto the CHILD process's `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` /
+  `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` / `API_TIMEOUT_MS`. `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_AUTH_TOKEN` are GLOBAL PER PROCESS — you cannot route different model tiers to
+  different providers within one Claude Code process — so delegation is what makes multi-provider
+  possible at all: the worker is a SEPARATE process. All tiers are pinned to `FLEET_WORKER_MODEL`
+  because the child has exactly one endpoint. The bearer token is read from a mode-600
+  `FLEET_WORKER_TOKEN_FILE` (a non-600 file warns loudly) and reaches the worker through the
+  environment ONLY — never argv (never `ps`), never a log, never the repo.
+  `examples/worker-zai.env.example` ships the z.ai/GLM preset and the Anthropic default, with
+  placeholders only. (#23)
+- **OS-sandbox confinement for headless workers, fail-closed.** Workers run with
+  `--dangerously-skip-permissions`, and fleet's Python `PreToolUse` write-guard does NOT bind
+  subprocesses (a `Bash` out-of-worktree redirect, a `sed -i`, a `python3 open(…,'w')` all sail
+  through it — it is a Write/Edit-only rail). `fleet delegate` therefore wraps every worker in
+  macOS `sandbox-exec` with a generated profile that denies file-writes outside the worktree while
+  still permitting the shared `.git` common dir (so `git commit` works from a linked worktree),
+  `/tmp`/`$TMPDIR` and the `~/.claude`/`~/.cache`/`~/.npm` caches. `FLEET_DELEGATE_SANDBOX`
+  defaults to `1`: if the sandbox is unavailable (`sandbox-exec` missing, or a non-macOS host)
+  delegate DIES rather than silently running unconfined, pointing Linux users at Claude Code's
+  native sandbox. `FLEET_DELEGATE_SANDBOX=0` is a loud, explicit opt-out. `--bare` is refused
+  outright: it disables every hook and is slated to become the `-p` default. (#23)
+- **Back-pressure.** Worker invocations retry with jittered exponential backoff on `429`/`529` and
+  transport/overload errors (`FLEET_DELEGATE_RETRIES`, default 4) — a headless fleet against a
+  hosted gateway will hit them. A worker that genuinely failed the *task* is never retried. (#23)
+- `tests/negatives/delegate-confinement.sh` — mutation-tested negative suite (`claude` stubbed on
+  `PATH`; no model, no network) asserting that a sandboxed worker CANNOT write outside its worktree
+  (out-of-worktree redirect, `python3` subprocess write, and a write into a SIBLING agent's
+  worktree — all `EPERM`) yet CAN still `git commit` inside it; that delegate fails CLOSED when the
+  sandbox is unavailable and the worker never runs; that the same escape DOES succeed under the
+  explicit `FLEET_DELEGATE_SANDBOX=0` opt-out (so the blocks are provably the sandbox's doing); that
+  a `529` is retried to success while a genuine task failure is not; that `loop --until` self-heals
+  via an in-context `--resume` and escalates non-zero when the check never goes green; and that the
+  bearer token never reaches argv or a log. (#23)
 - Demo GIF in the README, rendered from `assets/demo.tape` (charmbracelet/vhs) via `assets/demo-setup.sh`. (#11)
 - `tests/negatives/reaper-liveness.sh` — negative test (gh stubbed on `PATH`, no network) asserting that a live claim with uncommitted work is not reaped by a default run, that a failing `gh pr list` reaps nothing, and that a genuinely abandoned claim still is. (#22)
 - `tests/negatives/reaper-foreign-claims.sh` — negative test (gh stubbed on `PATH`, local bare repo as `origin`, no network) asserting that a claim held on another host (remote ref, no local worktree) is enumerated at all, that a stale/PR-less/work-free one is FULLY reclaimed, that one with pushed work is NOT reaped (the ahead-count must resolve against `origin/<branch>`, not a nonexistent local ref), that a freshly-taken foreign claim is kept, and that #22's fail-closed guarantees hold through the new path. (#21)
