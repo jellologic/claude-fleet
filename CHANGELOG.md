@@ -4,6 +4,10 @@ All notable changes to claude-fleet are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- `tests/negatives/worker-stall-falsepositive.sh` — mutation-checked: a healthy, slow, silent worker must survive the default config; a genuinely wedged worker must still die by the wall clock; a supervisor kill must never masquerade as a task failure. (#70)
+### Fixed
+- **The stall detector KILLED HEALTHY WORKERS.** It measured growth of the worker's stdout+stderr — but the worker runs with `--output-format json`, which prints the **entire result at the end, in one blob**. A healthy worker therefore emits **zero incremental output** for its whole run, so *"quiet"* was **always true** and `FLEET_WORKER_STALL_S` was never a liveness signal: it was a hidden **second wall-clock timeout** that killed any worker slower than 600s. It corrupted a live experiment (#61) — healthy `api` workers were killed at exactly 600s, and because the arm under test had a longer prompt (so ran slower), the false positive hit **that arm harder**, biasing the result *toward the hypothesis*. **A monitor whose input is constant is worse than no monitor: it fires on the wrong thing and you believe it.** Stall detection now defaults to **0 (off)** and is only meaningful once the worker streams; the **wall-clock timeout** is the real protection against a wedged worker and needs no output at all. And a supervisor kill is now reported **distinctly from a task failure** (`WALL-TIMEOUT` / `STALL-KILL`, both saying *"this is NOT a task failure"*) — otherwise a CI run or an experiment silently counts infrastructure as a result, which is exactly what happened. (#70)
 
 ## [0.3.1] — 2026-07-14
 **Two prerequisites for the experiment that will decide `fleet spec`'s fate — and a changelog we destroyed and restored.**
