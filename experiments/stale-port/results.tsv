@@ -1,0 +1,13 @@
+arm	trial	outcome	oracle	conform	shipped	secs	cost	store_sigs	note
+stale-port	1	VALID	PASS	GREEN	YES	378	1.445	__init__,_next_id,_store,put,get,all,save,fetch,items	
+prose	1	VALID	PASS	n/a	YES	262	0.827	__init__,put,get,all	
+stale-port	2	VALID	PASS	GREEN	YES	417	2.047	__init__,_ensure_id,save,fetch,items,put,get,all	
+prose	2	VALID	PASS	n/a	YES	201	0.662	__init__,_new_id,put,get,all	
+stale-port	3	ESCALATED	FAIL	GREEN	NO	226	0.798	__init__,save,fetch,items	escalated:api
+prose	3	VALID	PASS	n/a	YES	148	0.699	__init__,put,get,all	
+stale-port	4	ESCALATED	FAIL	GREEN	NO	476	1.676	__init__,put,get,all,save,fetch,items,_next_id	escalated:api
+prose	4	VALID	PASS	n/a	YES	195	0.802	__init__,put,get,all	
+stale-port	5	ESCALATED	FAIL	n/a	NO	447	1.677	-	escalated:store
+prose	5	VALID	PASS	n/a	YES	252	0.835	__init__,put,get,all	
+stale-port	6	ESCALATED	FAIL	n/a	NO	393	1.215	-	escalated:store
+prose	6	VALID	PASS	n/a	YES	170	0.793	__init__,put,get,all,_next_id	

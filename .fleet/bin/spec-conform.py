@@ -76,6 +76,12 @@ def parse_pyi(path):
     classes, funcs = {}, {}
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
+            if is_type_only(node):
+                # A TypedDict / Protocol / NamedTuple / Enum / bare-annotation class in a .pyi is a
+                # TYPE the port uses in its signatures — NOT an obligation the implementation must
+                # re-declare. Demanding `class Task(TypedDict)` be redefined in store.py made every
+                # realistic port permanently non-conformant. (#68)
+                continue
             meth = {}
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -84,6 +90,22 @@ def parse_pyi(path):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             funcs[node.name] = params_of(node)
     return classes, funcs
+
+
+# Bases that mark a class as a TYPE DECLARATION rather than an interface to implement.
+_TYPE_BASES = {"TypedDict", "Protocol", "NamedTuple", "Enum", "IntEnum", "StrEnum"}
+
+
+def is_type_only(node):
+    """True if this ClassDef is a type declaration, not an interface to implement (#68)."""
+    for b in node.bases:
+        nm = b.attr if isinstance(b, ast.Attribute) else getattr(b, "id", None)
+        if nm in _TYPE_BASES:
+            return True
+    # No methods at all — just annotated fields (`id: str`). That is a data shape, not an interface.
+    has_method = any(isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) for s in node.body)
+    has_ann = any(isinstance(s, (ast.AnnAssign, ast.Assign)) for s in node.body)
+    return has_ann and not has_method
 
 
 # ── the IMPLEMENTATION: import it (inspect), or fall back to ast ─────────────────────────
@@ -132,7 +154,11 @@ def load_by_import(path):
         if inspect.isclass(obj) and obj.__module__ == name:
             meth = {}
             for mn, mo in inspect.getmembers(obj, callable):
-                if mn.startswith("__"):
+                # Skip inherited object.* noise, but NEVER skip a dunder the class actually defines
+                # — `__init__` is the single most commonly declared method in a port, and dropping
+                # it made every such port report `__init__` MISSING even when it was right there.
+                # (#68 — this bug made the whole conformance check unusable.)
+                if mn.startswith("__") and mn not in vars(obj):
                     continue
                 p = sig_params(mo)
                 if p is not None:
