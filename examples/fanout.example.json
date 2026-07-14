@@ -1,0 +1,21 @@
+{
+  "$schema": "./fanout.schema.json",
+  "_comment": "fleet delegate fanout examples/fanout.example.json --jobs 2 --dry-run  — the `owns` globs of these units are PAIRWISE DISJOINT, which is why fanout will run them. Make any two overlap and fanout REFUSES the whole manifest with exit 2 and launches nothing: N agents on the same files do not go faster, they overwrite each other (Anthropic, 16 agents, C compiler).",
+  "units": [
+    {
+      "id": "parser",
+      "owns": ["src/parser/**", "tests/parser/**"],
+      "task": "Make the parser accept trailing commas in argument lists. Add tests under tests/parser/. Do not change the AST node definitions that codegen consumes."
+    },
+    {
+      "id": "codegen",
+      "owns": ["src/codegen/**", "tests/codegen/**"],
+      "task": "Emit a jump table instead of an if-chain for switch statements with more than 8 dense cases. Add tests under tests/codegen/."
+    },
+    {
+      "id": "docs",
+      "owns": ["docs/**", "README.md"],
+      "task": "Document the two changes above once they land. Only touch docs/ and README.md."
+    }
+  ]
+}

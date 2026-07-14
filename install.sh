@@ -48,6 +48,7 @@ if ! grep -q '# >>> claude-fleet (managed) >>>' "$TARGET/.gitignore"; then
     echo ".fleet/worktrees/"
     echo ".fleet/locks/"
     echo ".fleet/delegate/"
+    echo ".fleet/fanout/"
     echo ".claude/worktrees/"
     echo ".claude/settings.local.json"
     echo ".claude/agent-claims.json"

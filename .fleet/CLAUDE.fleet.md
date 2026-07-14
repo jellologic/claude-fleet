@@ -30,3 +30,8 @@ claims are rejected. The integrator merges a batch with `.fleet/bin/fleet integr
 - **Pin the Claude Code version** the fleet runs; re-run `tests/negatives/` after any upgrade.
 - The Python guards are defence-in-depth, **not** a boundary: they do not bind subprocesses. The OS
   sandbox and the GitHub ruleset are the load-bearing rails. See the README rail table.
+- **`fanout` refuses non-disjoint manifests — that is a feature.** If it rejects your manifest,
+  **repartition the units; do not crank `--jobs`.** Anthropic's 16 agents on one task "would hit the
+  same bug, fix that bug, and then overwrite each other's changes" — N agents on overlapping work is
+  worse than N=1. And `--jobs` is a **starting point to tune**, not an optimum: Bun's real ceiling at
+  ~64 agents was disk/IOPS ("ran out of disk space and crashed several times").

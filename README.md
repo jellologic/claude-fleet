@@ -51,6 +51,7 @@ the **worker** does the labour.
 | `fleet delegate feedback <wt> "<fix…>"` | `--resume` that worktree's session — continue **in context**, not from a cold start |
 | `fleet delegate loop <wt> --until '<check>' "<task>"` | **self-heal**: run → run the check → feed its failure back → repeat, bounded by `--max-iters` (default 3). Exit 0 when the check goes green; non-zero (escalate) when it never does. |
 | `fleet delegate review <wt> [--reviewers N] [--base <ref>]` | **N=2 adversarial, diff-only, read-only reviewers.** Every finding must ship a runnable repro or patch; the artifact is *executed* and adjudicated by `fleet_gate`. **Advisory — it never blocks.** |
+| `fleet delegate fanout <manifest.json> [--jobs N] [--dry-run] [--resume]` | **N units, one worktree each, run in parallel — but only if they are PROVABLY DISJOINT.** Refuses (exit 2) a manifest whose `owns` globs overlap. Worktrees created *serially*, work run *concurrently*. Exits non-zero iff a unit failed. |
 
 ```sh
 .fleet/bin/fleet claim 42
@@ -104,6 +105,62 @@ falling back to its `FLEET_WORKER_*` twin when unset. (`review` warns loudly whe
 identical.) Spend budget on **decorrelation**, not on more reviewers: ten reviewers once
 unanimously endorsed an OpenSSL padding oracle that did not exist — they shared a false premise,
 and it took *one* instance that actually compiled the code and ran three tests to kill it.
+
+### `fanout` — the ceiling is **I/O and decomposability**, not the model
+```sh
+.fleet/bin/fleet delegate fanout units.json --dry-run     # validate + preflight, launch nothing
+.fleet/bin/fleet delegate fanout units.json --jobs 4      # N workers, N worktrees, in parallel
+.fleet/bin/fleet delegate fanout units.json --resume      # re-run only the units that aren't done
+```
+```json
+{ "units": [
+    { "id": "parser",  "owns": ["src/parser/**"],  "task": "…" },
+    { "id": "codegen", "owns": ["src/codegen/**"], "task": "…" }
+] }
+```
+Schema + a worked example: [`examples/fanout.schema.json`](examples/fanout.schema.json) ·
+[`examples/fanout.example.json`](examples/fanout.example.json). Each unit becomes one `delegate` run
+(sandbox, `FLEET_WORKER_*` provider, 429/529 retry) on branch `agent/fanout/<manifest>/<id>` in its
+own worktree. Per-unit state lives in `.fleet/fanout/<manifest>/` (gitignored) so `--resume` can pick
+up after a crash. **A unit's failure does not abort its siblings** — they are disjoint, so they are
+independent — but fanout **exits non-zero iff any unit failed**. (`review` is the opposite: advisory,
+never blocks. `fanout` is a work-runner. Do not confuse the two.)
+
+**Disjointness is a PRECONDITION, enforced, not advice.** Anthropic pointed **16 agents** at
+compiling the Linux kernel with their C compiler
+([source](https://www.anthropic.com/engineering/building-c-compiler)):
+
+> *"every agent would hit the same bug, fix that bug, and then overwrite each other's changes.*
+> ***Having 16 agents running didn't help because each was stuck solving the same task.***"
+
+N agents on work that isn't genuinely disjoint don't go faster — they duplicate the work and then
+**destroy each other's edits**. That is *worse* than N=1, and **no `--jobs` value rescues it**. So
+`fanout` **proves** the units' `owns` globs pairwise disjoint before it launches anything — using
+`check-claims.py`, fleet's existing ownership gate, driven with a claims manifest synthesised from
+the units — and if they collide it **refuses the whole manifest** (exit 2, naming the colliding units
+and the offending path) rather than capping and hoping. **Nothing is created: no worktree, no branch,
+no worker.** Repartition, don't crank `--jobs`.
+
+**The cap is derived from I/O headroom, not from a number someone liked.** Bun ran ~64 agents over a
+535k-line Zig→Rust port ([source](https://bun.com/blog/bun-in-rust)). What broke was never the model:
+
+> *"The machine ran out of disk space and crashed several times anyway"*
+> *"One slow `grep` command was all it took to freeze disk reads & writes for minutes."*
+
+Hence: a **disk preflight** before a single worktree is created (`units × FLEET_FANOUT_DISK_MB_PER_JOB`,
+default 512 MB — refuses if headroom is short), `nice` on every worker, and `ionice` where it exists.
+`--jobs` defaults to `min(cpu_count / 2, 4)` — an intentionally conservative **proxy** for I/O
+headroom and an explicit **starting point to tune per machine**, not a measured optimum. No source
+gives a measured per-repo parallel-agent ceiling; Bun's ~64 and Anthropic's 16 are anecdotes from two
+projects of very different shape. Set it empirically and instrument it.
+
+> **macOS has no `ionice`.** There, `nice` bounds **CPU, not IOPS** — and IOPS is the thing that
+> actually bit Bun. On Linux, prefer a real cgroup (`systemd-run --scope -p IOWeight=…`, which is what
+> Bun ended up doing) for an I/O bound. fleet won't pretend otherwise.
+
+**Worktrees are created serially; only the work is parallel.** Firing 16 `git worktree add`
+concurrently, **4 of 16 failed** on shared-`.git` contention; created serially, 16/16 succeeded.
+Concurrent *commits* from separate worktrees are fine — it's creation that races.
 
 ### The worker is a separate process — that's the whole trick
 `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` are **global per process**. You *cannot* route one
