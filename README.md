@@ -41,7 +41,7 @@ and a merge-time build gate close the rest.
 | `fleet claim <issue>` / `release` | atomic issue claim (lock + worktree + draft PR + labels + ledger); `release` abandons |
 | `fleet done <issue>` | post-merge cleanup — worktree + branch + claim, issue stays closed |
 | `fleet wt {new,bootstrap,rebase,reap,…}` | worktree lifecycle |
-| `fleet integrate <branch> <branches…>` | sequential merge + per-merge gate + rollback |
+| `fleet integrate <branch> <branches…>` | sequential merge + per-merge gate + rollback; `--cohort a b` merges a **co-dependent** set first and gates it **once** |
 | `fleet reap [--stale H\|--force]` | reclaim crashed/abandoned claims |
 | `fleet delegate {delegate,feedback,loop}` | hand a work-unit to a headless, **OS-sandboxed** `claude -p` worker on any provider; `loop --until '<check>'` self-heals against *your* oracle |
 | `fleet delegate review <wt> [--reviewers N]` | **N=2 adversarial, diff-only, READ-ONLY reviewers.** Every finding must ship a runnable repro or patch, adjudicated by the real gate. **Advisory — never blocks** |
@@ -177,6 +177,38 @@ projects of very different shape. Set it empirically and instrument it.
 **Worktrees are created serially; only the work is parallel.** Firing 16 `git worktree add`
 concurrently, **4 of 16 failed** on shared-`.git` contention; created serially, 16/16 succeeded.
 Concurrent *commits* from separate worktrees are fine — it's creation that races.
+
+### `integrate --cohort` — co-dependent units are gated **together**, or not at all
+
+```sh
+fleet integrate integ --cohort store api        # merge BOTH, THEN gate ONCE
+fleet integrate integ a b c                     # default: gate each, roll back each
+fleet integrate integ --cohort a b -- c d       # mixed: {a,b} together, then c, then d
+```
+
+**A `provides`/`consumes` port edge is precisely a declaration that its units are *not independently
+gateable*.** The whole point of a port is to let a consumer and its provider be built **in parallel**
+and only meet at **integration** — so if your `fleet_gate` is an integration test (which is exactly
+what fleet tells you the oracle should be), the provider alone is **red** (no consumer) and the
+consumer alone is **red** (no provider). `integrate`'s per-branch gate then rejects and rolls back
+**both perfectly good units** and integrates **nothing**. The gate is unsatisfiable **by
+construction**. That is not hypothetical: it is what the #50 experiment hit — every unit rejected, in
+all 6 trials, in both arms (#55).
+
+`--cohort` merges every named branch **first** and runs `fleet_gate` **once** on the combined tree. A
+cohort is **one atomic unit of work**: if the combined gate is red the **whole cohort** rolls back to
+the pre-cohort tip — never an individual member, which is the bug. A **merge conflict** is still
+reported **per-branch** (it is not a gate verdict, and the gate never runs). After a red cohort gate,
+each member is also gated alone as a **DIAGNOSTIC hint** at which diff is the likely cause — it is
+**labelled as a hint and vetoes nothing**, because for genuinely co-dependent units *every* member is
+red alone, by construction.
+
+**The per-branch gate stays the default for independent branches** — there it is genuinely useful,
+catching one bad branch early without poisoning the integration tree.
+
+`fanout` prints the exact command to run: a manifest declaring **any** port edge emits its units as a
+**cohort**; one with no port edge emits a plain list. It never integrates for you — `fanout` is a
+work-runner, integration is a human/CI decision.
 
 ### `fronts` — the **oracle** decides the decomposition, **not a model**
 `fanout` needs a manifest. Where does the manifest come from? Until now: a human wrote it and
