@@ -12,6 +12,16 @@
 Coordinate a **fleet of parallel AI coding agents** with **git-worktree branch-ref locks**,
 **crash recovery**, a **sequential merge gate**, and **tool-layer guard hooks** — so two agents
 never touch the same work, broken branches never reach `main`, and a dead agent never holds a lock.
+
+Then **point the fleet programmatically**: `fleet delegate` hands a work-unit to a **headless,
+OS-sandboxed `claude -p` worker** — on *any* provider, including a cheaper model behind an
+Anthropic-compatible gateway — `fleet review` runs **N=2 adversarial diff-only reviewers** whose
+findings must ship a **runnable repro or patch**, and `fleet fanout` runs many units in parallel
+but **refuses a manifest whose units are not provably disjoint**.
+
+The through-line: **workers and reviewers produce evidence; the gate produces verdicts.** An LLM is
+never the correctness oracle — your build and test suite are.
+
 Stack-agnostic: the core is pure **shell + python3 + git + gh** (no node/bun); your language and
 toolchain specifics live in one small per-repo `config.sh`. Install, update, and remove are all
 driven through Claude Code itself.
@@ -33,10 +43,14 @@ and a merge-time build gate close the rest.
 | `fleet wt {new,bootstrap,rebase,reap,…}` | worktree lifecycle |
 | `fleet integrate <branch> <branches…>` | sequential merge + per-merge gate + rollback |
 | `fleet reap [--stale H\|--force]` | reclaim crashed/abandoned claims |
-| `fleet delegate {delegate,feedback,loop,review}` | hand a work-unit to a headless, OS-sandboxed `claude -p` worker; `review` runs N=2 adversarial diff-only reviewers whose findings must ship a runnable repro/patch (advisory — never blocks) |
+| `fleet delegate {delegate,feedback,loop}` | hand a work-unit to a headless, **OS-sandboxed** `claude -p` worker on any provider; `loop --until '<check>'` self-heals against *your* oracle |
+| `fleet delegate review <wt> [--reviewers N]` | **N=2 adversarial, diff-only, READ-ONLY reviewers.** Every finding must ship a runnable repro or patch, adjudicated by the real gate. **Advisory — never blocks** |
+| `fleet delegate fanout <manifest> [--jobs N]` | N units in parallel worktrees — **refuses a manifest whose units are not provably disjoint** (a `--jobs` cap cannot rescue overlap) |
 | `fleet check` | validate disjoint file ownership |
-| git hooks | block main commits, branch naming, lockfile serialization, force-push |
-| Claude hooks | confine writes to the worktree, block secrets, deny `--no-verify`/main-push at the tool layer, session primer |
+| `fleet gate-check` | assert the merge gate is still wired (`core.hooksPath`) — a disabled hook cannot object to its own disabling |
+| git hooks | block main commits, branch naming, lockfile serialization; non-ff allowed only on CAS-owned agent branches |
+| Claude hooks | confine writes to the worktree, block secrets, deny `--no-verify` / main-push / `core.hooksPath` tampering / worktree-wide destructive git, at the tool layer |
+| OS sandbox | `sandbox-exec` profile binding **every subprocess** of a headless worker — the Python hooks do not |
 | GitHub ruleset | PR-only, no force-push, linear (the authoritative wall) |
 
 ## Delegation — point the fleet *programmatically* (`fleet delegate`)
