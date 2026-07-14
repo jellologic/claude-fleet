@@ -30,17 +30,31 @@ git -C "$ROOT" ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1 &&
 
 echo "==> creating worktree (LOCAL lock)"
 "$HERE/worktree-setup.sh" "$BRANCH" "$FLEET_MAIN" >/dev/null || die "could not create worktree for $BRANCH — another local agent holds it"
-git -C "$WT" commit --allow-empty -q -m "chore(agent): claim #$ISSUE — $TITLE"
+# The claim commit MUST carry entropy. Without it, two hosts racing the same issue build
+# a byte-identical commit object (same tree — --allow-empty off the same $FLEET_MAIN; same
+# parent — both just fetched; same message — the title comes from `gh issue view`; commonly
+# the same author/committer identity; and a same-second timestamp, since a freshly-labelled
+# issue is picked up simultaneously). Identical tree+parent+ident+message+time = identical
+# SHA, so the loser's push is a NO-OP ("Everything up-to-date", exit 0) rather than a
+# rejection, and BOTH hosts "win" the compare-and-swap. A per-claim nonce makes the two
+# commits genuine siblings, so the CAS below can actually reject the loser.
+CLAIM_ID="$(hostname -s 2>/dev/null || echo host)-$$-$(_fleet_id)"
+git -C "$WT" commit --allow-empty -q -m "chore(agent): claim #$ISSUE — $TITLE" -m "Claim-Id: $CLAIM_ID"
 
 echo "==> pushing $BRANCH (REMOTE compare-and-swap lock)"
+# Explicit create-if-absent CAS: an EMPTY expected value in --force-with-lease=<ref>: means
+# "the remote ref must not exist". This does not lean on the fast-forward rule and it closes
+# the TOCTOU window left by the advisory `ls-remote` pre-check above.
 LOG="$(mktemp)"
-if ! git -C "$WT" push -u origin "$BRANCH" >"$LOG" 2>&1; then
+if ! git -C "$WT" push --force-with-lease="refs/heads/$BRANCH:" origin "HEAD:refs/heads/$BRANCH" >"$LOG" 2>&1; then
   cat "$LOG" >&2; rm -f "$LOG"
   git -C "$ROOT" worktree remove --force "$WT" 2>/dev/null || true
   git -C "$ROOT" branch -D "$BRANCH" 2>/dev/null || true
   die "issue #$ISSUE was claimed by another agent first; pick another"
 fi
 rm -f "$LOG"
+# This push form takes no -u, so track the branch separately.
+git -C "$WT" branch --set-upstream-to="origin/$BRANCH" "$BRANCH" >/dev/null 2>&1 || true
 
 OWNS="${FLEET_CLAIM_OWNS:-${SP_CLAIM_OWNS:-}}"
 if [ -n "$OWNS" ]; then
@@ -69,7 +83,7 @@ echo "==> draft PR + labels + ledger"
 gh pr create --draft --head "$BRANCH" --base "$FLEET_MAIN" --title "wip(agent): #$ISSUE $TITLE" \
   --body "Closes #$ISSUE
 
-Claimed by agent worktree \`$BRANCH\`." >/dev/null 2>&1 || echo "WARN: draft PR not created (branch lock still holds)"
+Claimed by agent worktree \`$BRANCH\`." >/dev/null 2>&1 || echo "WARN: draft PR not created for $BRANCH — cause unknown (a PR may already exist, or gh may be unauthenticated). Verify with 'gh pr list --head $BRANCH' before working; open one manually."
 gh issue edit "$ISSUE" --add-label "$LABEL_WORKING" --remove-label "$LABEL_READY" >/dev/null 2>&1 || true
 ledger_add "$ISSUE" "$BRANCH" "$WT" "$TITLE" || true
 echo "CLAIMED #$ISSUE → $WT  (branch $BRANCH).  cd in and work; release: fleet release $ISSUE"
