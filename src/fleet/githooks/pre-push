@@ -3,9 +3,38 @@
 # claude-fleet pre-push — block direct push to protected refs + non-fast-forward.
 # Executed by git via /bin/sh (POSIX). Bypassable with --no-verify; the GitHub
 # ruleset is the authoritative wall.
+#
+# NON-FF vs CAS-OWNED BRANCHES (#41)
+# The non-ff rule exists to stop one agent clobbering another's commits. It must NOT
+# apply to a CLAIMED agent branch: `agent-claim.sh` guarantees EXACTLY ONE owner per
+# `agent/issue-N` — the remote branch ref IS the compare-and-swap lock. A force-push to a
+# branch you provably and exclusively hold cannot clobber a peer, and rebase-then-force-
+# push is the NORMAL lifecycle. CLAUDE.md itself prescribes `git rebase origin/main &&
+# git push`, and stacking one agent branch on another rewrites history by construction.
+#
+# Blocking it made fleet forbid fleet's own documented workflow, and every escape was
+# another rail: `--no-verify` (coord-guard denies it), `core.hooksPath` tampering (#30),
+# or `push --delete` — which releases the CAS lock and closes the PR. A rail whose only
+# escapes are the other rails is a bug, and it pressures agents toward exactly the habit
+# fleet exists to prevent.
+#
+# So: protected refs stay ABSOLUTELY blocked. CAS-owned branches are exempt from the
+# non-ff rule ONLY. Every other ref keeps the old protection — do not delete the check.
 set -eu
 zero='0000000000000000000000000000000000000000'
 status=0
+
+# Branch namespaces owned by exactly one agent via the claim CAS / worktree lock. Mirrors
+# FLEET_BRANCH_RE in agent-coord-lib.sh, as a `case` glob: this hook is POSIX sh invoked
+# directly by git, so it cannot rely on sourcing the bash lib.
+is_cas_owned() {
+  case "$1" in
+    agent/*|agent-*|worktree/*|worktree-*|pr/*|pr-*|lockfile/*|lockfile-*) return 0 ;;
+    chore/*|chore-*|feat/*|feat-*|feature/*|feature-*|fix/*|fix-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 while read -r lref lsha rref rsha; do
   [ -z "${rref:-}" ] && continue
   case "$rref" in
@@ -17,8 +46,16 @@ while read -r lref lsha rref rsha; do
     refs/heads/*)
       if [ "$rsha" != "$zero" ]; then
         if ! git merge-base --is-ancestor "$rsha" "$lsha" 2>/dev/null; then
-          echo "BLOCKED: non-fast-forward push to $rref. Rebase: git fetch origin && git rebase origin/${rref#refs/heads/}" >&2
-          status=1
+          br="${rref#refs/heads/}"
+          if is_cas_owned "$br"; then
+            # Exclusively held by this agent (branch-ref CAS): a rewrite here is a rebase,
+            # not a clobber. Use --force-with-lease at the call site so a stale local view
+            # still cannot overwrite a remote that moved underneath you.
+            echo "note: non-fast-forward push to $br — CAS-owned agent branch, allowed (this is a rebase, not a clobber)" >&2
+          else
+            echo "BLOCKED: non-fast-forward push to $rref. Rebase: git fetch origin && git rebase origin/${rref#refs/heads/}" >&2
+            status=1
+          fi
         fi
       fi ;;
   esac
