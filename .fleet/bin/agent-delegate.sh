@@ -995,6 +995,15 @@ for u in out:
             fh.write("pending\n")
 with open(os.path.join(state, "plan"), "w") as fh:
     fh.write("\n".join(u["id"] for u in out) + "\n")
+
+# COHORT (#55). A provides/consumes edge is PRECISELY a declaration that these units are NOT
+# independently gateable: the consumer needs its provider, and a provider alone has no consumer,
+# so an integration-test oracle is RED for either one on its own and GREEN only for both. Merging
+# them one at a time and gating each — `fleet integrate`'s default — rejects and rolls back BOTH
+# perfectly good units. So a manifest with ANY port edge integrates as a COHORT by default: merge
+# every unit, THEN gate once. Recorded here; `fanout` prints the exact command in its report.
+with open(os.path.join(state, "cohort"), "w") as fh:
+    fh.write("1\n" if any(u["provides"] or u["consumes"] for u in out) else "0\n")
 PY
 }
 
@@ -1184,8 +1193,42 @@ fanout_run() {  # $1 = manifest, $2 = jobs, $3 = dry-run, $4 = resume, $5 = base
   echo "  Re-run with --resume to retry only what did not finish."
   echo "  fanout IS a work-runner: it exits NON-ZERO iff a unit failed. (\`review\` is the opposite —"
   echo "  it is advisory evidence and must never block. Do not confuse the two.)"
+  fanout_integrate_hint "$state" "$plan"
   echo "═══════════════════════════════════════════════════════════════════════════════"
   exit "$any_fail"
+}
+
+# Print the exact `fleet integrate` line for the branches this fanout produced (#55). fanout is a
+# WORK-RUNNER; integration stays a human/CI decision, so we print the command and never run it.
+# A manifest that declares ANY provides/consumes edge integrates as a COHORT by default: a port
+# edge IS the declaration that its units are not independently gateable, and `fleet integrate`'s
+# default per-branch gate would reject and roll back BOTH a consumer and its provider — each is
+# red alone, by construction, and green only together.
+fanout_integrate_hint() {  # $1 = state dir, $2 = plan
+  local state="$1" plan="$2" id st branches="" is_cohort
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    st="$(cat "$state/units/$id/state" 2>/dev/null || echo pending)"
+    [ "$st" = "done" ] || continue
+    branches="$branches $(cat "$state/units/$id/branch" 2>/dev/null)"
+  done < "$plan"
+  [ -n "$branches" ] || return 0
+  is_cohort="$(cat "$state/cohort" 2>/dev/null || echo 0)"
+  echo ""
+  if [ "$is_cohort" = 1 ]; then
+    echo "  INTEGRATE (this manifest declares a provides/consumes PORT edge → COHORT):"
+    echo "      fleet integrate <integ-branch> --cohort$branches"
+    echo "  --cohort merges ALL of them and gates the combined tree ONCE. A port edge declares that"
+    echo "  these units are NOT independently gateable — a consumer is red without its provider and"
+    echo "  a provider is red without its consumer, so the DEFAULT per-branch gate would reject and"
+    echo "  roll back BOTH perfectly good units and integrate NOTHING (#55)."
+  else
+    echo "  INTEGRATE (no port edge → the units are independently gateable):"
+    echo "      fleet integrate <integ-branch>$branches"
+    echo "  Each branch is gated on its own and rolled back on its own, so one bad unit cannot"
+    echo "  poison the integration tree. If these units are in fact co-dependent, declare the port"
+    echo "  (\`fleet spec\`) or integrate them with \`--cohort\` (#55)."
+  fi
 }
 
 # ── verbs ────────────────────────────────────────────────────────────────────────────
