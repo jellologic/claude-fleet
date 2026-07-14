@@ -12,6 +12,17 @@ shift
 [ "$#" -gt 0 ] || { echo "no branches to merge" >&2; exit 2; }
 cur="$(git branch --show-current)"
 [ "$cur" = "$INTEG" ] || { echo "error: run from a worktree on '$INTEG' (currently on '$cur')" >&2; exit 2; }
+
+# The merge gate must still be WIRED before we trust anything it says (#30). If some agent
+# repointed core.hooksPath, the pre-push hook is a no-op and integrating is unsafe.
+# Escape hatch for environments that legitimately manage hooks elsewhere (CI).
+if [ "${FLEET_SKIP_GATE_CHECK:-0}" != 1 ]; then
+  "$HERE/check-gate-integrity.sh" --quiet || {
+    echo "error: refusing to integrate — the merge gate is not wired (see 'fleet gate-check')" >&2
+    echo "       set FLEET_SKIP_GATE_CHECK=1 only if hooks are managed elsewhere." >&2
+    exit 2; }
+fi
+
 INTEG_BASE="$(git rev-parse HEAD)"   # integration tip BEFORE any merge — used to scope the FINAL gate
 
 gate() {

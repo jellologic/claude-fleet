@@ -13,6 +13,7 @@ case "$cmd" in
   wt)            exec "$HERE/wt.sh" "$@" ;;
   integrate)     exec "$HERE/fleet-integrate.sh" "$@" ;;
   check)         exec python3 "$HERE/check-claims.py" "$@" ;;
+  gate-check)    exec "$HERE/check-gate-integrity.sh" "$@" ;;
   install-hooks) exec "$HERE/install-hooks.sh" "$@" ;;
   ruleset)       exec "$HERE/setup-main-ruleset.sh" "$@" ;;
   stress-ledger) exec "$HERE/stress-ledger.sh" "$@" ;;
@@ -30,6 +31,7 @@ usage: fleet <command> [args]
   wt {new <task>|bootstrap|rebase|reap <name>|list|prune}
   integrate <integ-branch> <branch>...   sequential merge + gate + rollback
   check [manifest]         validate the ownership manifest (disjoint claims)
+  gate-check [--quiet]     assert the pre-push merge gate is still wired (core.hooksPath)
   install-hooks            wire .githooks via core.hooksPath
   ruleset [owner/repo]     create the protect-main GitHub ruleset
   uninstall [--force]      cleanly remove claude-fleet from this repo
