@@ -2,16 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/jellologic/claude-fleet/examples/fanout.schema.json",
   "title": "claude-fleet fanout manifest",
-  "description": "A partition of the repository into PAIRWISE DISJOINT units, one headless worker per unit, each in its own worktree. `fleet delegate fanout <manifest>` PROVES the partition disjoint (via check-claims.py) before it launches anything, and REFUSES (exit 2) if it is not. Disjointness is a precondition, not advice: Anthropic ran 16 agents at one task and 'every agent would hit the same bug, fix that bug, and then overwrite each other's changes' — N agents on overlapping work is strictly worse than N=1, so no --jobs value can rescue a bad manifest.",
+  "description": "A partition of the repository into PAIRWISE DISJOINT units, one headless worker per unit, each in its own worktree. `fleet delegate fanout <manifest>` PROVES the partition disjoint (via check-claims.py) before it launches anything, and REFUSES (exit 2) if it is not. Disjointness is a precondition, not advice: Anthropic ran 16 agents at one task and 'every agent would hit the same bug, fix that bug, and then overwrite each other's changes' \u2014 N agents on overlapping work is strictly worse than N=1, so no --jobs value can rescue a bad manifest. Units may also declare `provides`/`consumes` port ids (#48): fanout proves the units own disjoint FILES, but disjoint files do NOT imply compatible INTERFACES \u2014 two agents can own non-overlapping paths and still build to incompatible contracts, and the collision only surfaces at integration. Anthropic's file lock was fully in force while their 16 agents were still 'stuck solving the same task': file-level locking enforces distinct task NAMES, not distinct semantic WORK. A manifest with no provides/consumes behaves exactly as it did before.",
   "type": "object",
-  "required": ["units"],
+  "required": [
+    "units"
+  ],
   "properties": {
     "units": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "owns", "task"],
+        "required": [
+          "id",
+          "owns",
+          "task"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -21,8 +27,11 @@
           "owns": {
             "type": "array",
             "minItems": 1,
-            "items": { "type": "string", "minLength": 1 },
-            "description": "The unit's file partition, as repo-relative globs (no leading '/', no '..'). A bare directory means its whole subtree and is normalised to '<dir>/**'. MUST be pairwise disjoint with every other unit's `owns` — proven by check-claims.py, which also rejects globs that target the repo's `forbidden` (generated) paths."
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "The unit's file partition, as repo-relative globs (no leading '/', no '..'). A bare directory means its whole subtree and is normalised to '<dir>/**'. MUST be pairwise disjoint with every other unit's `owns` \u2014 proven by check-claims.py, which also rejects globs that target the repo's `forbidden` (generated) paths."
           },
           "task": {
             "type": "string",
@@ -32,6 +41,22 @@
           "branch": {
             "type": "string",
             "description": "Optional. Override the derived branch name. Must satisfy the repo's branchPattern (see .claude/agent-claims.json)."
+          },
+          "provides": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Port ids (from .fleet/ports.json) this unit IMPLEMENTS. EXACTLY ONE unit may provide a given port: two units declaring the same `provides` is a REFUSAL (they would silently implement the same interface twice \u2014 Anthropic's duplicate-code tax: 'LLM-written code frequently re-implements existing functionality, so I tasked one agent with coalescing any duplicate code it found'). The port's `artifact` \u2014 a FROZEN, MACHINE-CHECKABLE file (.d.ts/.pyi/trait/protobuf/OpenAPI, NEVER prose) \u2014 is READ-ONLY to every OTHER unit. See `fleet spec`. (#48)"
+          },
+          "consumes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Port ids this unit BUILDS AGAINST. Every entry must resolve to EXACTLY ONE `provides` \u2014 either in this manifest, or to a port whose artifact already exists on the base branch (git HEAD). A dangling `consumes` is a REFUSAL: a consumer with no contract will invent one, and the mismatch surfaces at integration. The provides\u2192consumes DAG must also be ACYCLIC \u2014 a cycle means the units are NOT semantically independent, and the manifest is refused exactly as an overlapping glob is. `fleet spec stub` generates a compiling stub for each port so a consumer typechecks on DAY ZERO without its provider existing. (#48)"
           }
         },
         "additionalProperties": true

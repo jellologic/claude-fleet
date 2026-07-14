@@ -5,6 +5,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- **`fleet spec {init|check [manifest]|stub [manifest]|amend <port>}` — the CONTRACT/PORT layer:
+  freeze a TYPED, MACHINE-CHECKABLE interface and extend the disjointness proof from FILES to
+  INTERFACES.** `fanout` proves the units own disjoint **files**. It proves **nothing** about their
+  **interfaces**: two agents can own non-overlapping paths and still build to incompatible contracts,
+  and the collision surfaces only at **integration**. This is observed, not hypothetical — Anthropic
+  ran 16 agents with their `current_tasks/` git-file lock **fully in force** and still got: *"Every
+  agent would hit the same bug, fix that bug, and then overwrite each other's changes. Having 16
+  agents running didn't help because each was stuck solving the same task."* **File-level locking
+  enforces distinct task NAMES, not distinct semantic WORK.** (Bun and Anthropic ran 64 and 16 agents
+  with no contract layer — but both had a complete frozen reference **for free**: Bun's Zig source was
+  1,448 `.zig` → 1,448 `.rs`, **1:1**, so every module boundary and signature was fixed in advance and
+  no interface *negotiation* ever happened; Anthropic had the C standard + GCC. **Greenfield fanout has
+  neither.**) So: **(1)** a port is a **TYPED artifact — never prose** (`.d.ts`, `.pyi`, a trait file,
+  protobuf, OpenAPI), declared in `.fleet/ports.json` and committed to the **base branch** before
+  fanout; every N-agent project that worked froze something a *machine* could check, and every
+  prose-spec tool has effectively zero published evidence. **(2)** units may declare
+  `provides`/`consumes`, and `check-claims.py` — fleet's ONE ownership prover, **extended, never
+  forked** — gains three **static, cheaply-decidable** proofs that REFUSE the manifest with **exit 2**
+  before anything launches: every `consumes` resolves to **EXACTLY ONE** `provides` (in the manifest,
+  or to a port already in git HEAD) — **no dangling**, and **no duplicate provider** (two units would
+  silently implement the same interface twice: Anthropic's duplicate-code tax, *"LLM-written code
+  frequently re-implements existing functionality, so I tasked one agent with coalescing any duplicate
+  code it found"*); and the **provides→consumes DAG is ACYCLIC** — a cycle means the units are **not
+  semantically independent**, and it is **named** in the error. **(3)** the port artifact is
+  **READ-ONLY** to every unit that does not `provides` it — enforced against the unit's `owns` AND its
+  **diff**, which is what stops **silent contract drift**; `fleet spec amend <port>` is the only
+  sanctioned way to change one, and it names every consumer and marks them for a **re-run**.
+  **(4)** `fleet spec stub` generates a **COMPILING stub** for every provided port, so a **consumer**
+  unit typechecks and runs its own tests **on day zero with no provider in existence** (STVR 2025:
+  *"By decoupling the consumer and provider via the contract file, the CDC tests don't require running
+  the consumer and the provider simultaneously"*) — via the stack-agnostic per-repo hook
+  `fleet_stub_for <artifact> <stub-path>` in `.fleet/config.sh`, with a documented no-op default.
+  **(5)** the frozen port is piped into the `fanout` worker's brief and into `fleet delegate review`'s
+  prompt (Bun's reviewers checked conformance to the frozen reference **and** behavioural equivalence
+  — the prompt explicitly forbids degenerating into a schema-linter that duplicates the type-checker).
+  **`fleet spec check` is a fast PRE-GATE inside `fleet_gate`, NEVER the verdict**: the measured ceiling
+  (STVR 2025, peer-reviewed) is 41/53 seeded integration defects caught (**77%**), and 11 of the 12
+  misses were value-range changes — *"They could not replace the service black-box tests but only
+  complement them."* **The ORACLE stays the test suite** — the same architecture fleet already uses for
+  `review`: evidence, not verdicts. **Honestly:** nothing in the literature measures whether a frozen
+  interface reduces integration failure across N parallel agents; the 77% is a synthetic *syntactic*
+  taxonomy on ONE project; and the peer-reviewed base for contract testing is **11 articles, total**.
+  **Fully backwards compatible: a manifest with no `provides`/`consumes` behaves exactly as before.**
+  (#48)
+- `tests/negatives/spec-ports.sh` — mutation-checked. Throwaway repos, stubbed `claude`, no model, no
+  network. A **dangling** `consumes`, **two units providing the same port**, and a provides→consumes
+  **CYCLE** (whose text must NAME the cycle) are each REFUSED with exit 2 and launch **nothing**; a
+  valid DAG runs and gets the frozen port's **contents** piped into its brief; a `consumes` resolving
+  to a port already **in git HEAD** is accepted while an **uncommitted** artifact is still dangling; a
+  unit whose **diff** touches a frozen port it does not provide is a **GATE FAILURE** (and its provider
+  is not blocked); `fleet spec stub` makes a consumer typecheck with **no provider present**; the
+  `fanout-disjoint` scenarios and `fleet fronts` output still pass unchanged. Mutants verified:
+  removing the dangling check, the cycle check, or the read-only enforcement each turns exactly its
+  own assertion red. (#48)
+- `examples/ports.schema.json` + `examples/ports.example.json` — the port registry, and
+  `examples/fanout.schema.json` / `examples/fanout.example.json` extended with `provides`/`consumes`.
+  (The example's parser unit used to say, in prose, *"Do not change the AST node definitions that
+  codegen consumes"* — nothing checked it, so nothing enforced it. It is now `port:AST`.) (#48)
 - **`fleet fronts [--oracle '<cmd>'] [--shard-by file|package|dir] [-o <manifest.json>]
   [--max-units N] [--task '<tmpl>'] [--dry-run] [--require-parallel]` — the WORK-FRONT GENERATOR:
   run a machine oracle, shard its FAILURES into provably disjoint units, emit the `fanout` manifest.

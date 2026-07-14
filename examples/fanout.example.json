@@ -1,16 +1,18 @@
 {
   "$schema": "./fanout.schema.json",
-  "_comment": "fleet delegate fanout examples/fanout.example.json --jobs 2 --dry-run  — the `owns` globs of these units are PAIRWISE DISJOINT, which is why fanout will run them. Make any two overlap and fanout REFUSES the whole manifest with exit 2 and launches nothing: N agents on the same files do not go faster, they overwrite each other (Anthropic, 16 agents, C compiler).",
+  "_comment": "fleet delegate fanout examples/fanout.example.json --jobs 2 --dry-run  — the `owns` globs of these units are PAIRWISE DISJOINT, which is why fanout will run them. Make any two overlap and fanout REFUSES the whole manifest with exit 2 and launches nothing: N agents on the same files do not go faster, they overwrite each other (Anthropic, 16 agents, C compiler). The `provides`/`consumes` port ids (#48) extend that proof from FILES to INTERFACES — disjoint files do NOT imply compatible contracts. This example used to say, in the parser's task text, 'Do not change the AST node definitions that codegen consumes'. That is a PROSE contract: nothing checks it, so nothing enforces it, so it is not a contract. It is now port:AST — a frozen, MACHINE-CHECKABLE artifact (see examples/ports.example.json), owned by exactly one unit and READ-ONLY to the other, and `codegen` typechecks against `fleet spec stub`'s stub on day zero with no `parser` in existence. A manifest with NO provides/consumes behaves exactly as it did before this existed.",
   "units": [
     {
       "id": "parser",
-      "owns": ["src/parser/**", "tests/parser/**"],
-      "task": "Make the parser accept trailing commas in argument lists. Add tests under tests/parser/. Do not change the AST node definitions that codegen consumes."
+      "owns": ["src/parser/**", "src/ports/ast.d.ts", "tests/parser/**"],
+      "provides": ["port:AST"],
+      "task": "Make the parser accept trailing commas in argument lists. Add tests under tests/parser/. You PROVIDE port:AST — src/ports/ast.d.ts is the frozen contract, and codegen is building against exactly the version committed on the base branch RIGHT NOW. If it must change, STOP and say so: that is a manifest bug, and the orchestrator fixes it with `fleet spec amend port:AST`, which re-runs every consumer."
     },
     {
       "id": "codegen",
       "owns": ["src/codegen/**", "tests/codegen/**"],
-      "task": "Emit a jump table instead of an if-chain for switch statements with more than 8 dense cases. Add tests under tests/codegen/."
+      "consumes": ["port:AST"],
+      "task": "Emit a jump table instead of an if-chain for switch statements with more than 8 dense cases. Add tests under tests/codegen/. You CONSUME port:AST (src/ports/ast.d.ts): it is READ-ONLY to you — touching it is an automatic gate failure. Conform to it exactly; the parser unit is implementing it in parallel right now."
     },
     {
       "id": "docs",
