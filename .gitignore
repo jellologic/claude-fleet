@@ -1,6 +1,11 @@
 .DS_Store
 *.log
 /tmp/
+# fleet_gate runs `python3 -m py_compile`, which writes __pycache__/ into every worktree.
+# Untracked noise — and it dirties `git status --porcelain`, which is the reaper's
+# uncommitted-work liveness signal (#21/#22).
+__pycache__/
+*.pyc
 # >>> claude-fleet (managed) >>>
 .fleet/worktrees/
 .fleet/locks/
