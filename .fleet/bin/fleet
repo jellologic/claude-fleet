@@ -10,6 +10,7 @@ case "$cmd" in
   done)          exec "$HERE/agent-done.sh" "$@" ;;
   reap|reaper)   exec "$HERE/agent-reaper.sh" "$@" ;;
   delegate)      exec "$HERE/agent-delegate.sh" "$@" ;;
+  fronts)        exec "$HERE/fleet-fronts.sh" "$@" ;;
   wt)            exec "$HERE/wt.sh" "$@" ;;
   integrate)     exec "$HERE/fleet-integrate.sh" "$@" ;;
   check)         exec python3 "$HERE/check-claims.py" "$@" ;;
@@ -34,6 +35,14 @@ usage: fleet <command> [args]
                            findings must ship a runnable repro/patch (advisory — never blocks);
                            \`fanout\` runs N units in parallel worktrees and REFUSES a manifest
                            whose units are not provably disjoint (a cap cannot rescue overlap)
+  fronts [--oracle '<cmd>'] [--shard-by file|package|dir] [-o <manifest.json>]
+         [--max-units N] [--task '<tmpl>'] [--dry-run] [--require-parallel]
+                           WORK-FRONT GENERATOR: run the oracle (default \`fleet_gate\`), shard its
+                           FAILURES into provably disjoint units, emit a \`fanout\` manifest. The
+                           ORACLE decides the decomposition, never a model (Bun sharded ~16k
+                           \`cargo check\` errors "grouped by crate"). If every failure traces to one
+                           file/package, it says NOT DECOMPOSABLE and emits ONE unit rather than
+                           manufacture fake parallelism — that is the Anthropic 16-agent failure.
   wt {new <task>|bootstrap|rebase|reap <name>|list|prune}
   integrate <integ-branch> <branch>...   sequential merge + gate + rollback
   check [manifest]         validate the ownership manifest (disjoint claims)

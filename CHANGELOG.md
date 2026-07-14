@@ -4,6 +4,49 @@ All notable changes to claude-fleet are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- **`fleet fronts [--oracle '<cmd>'] [--shard-by file|package|dir] [-o <manifest.json>]
+  [--max-units N] [--task '<tmpl>'] [--dry-run] [--require-parallel]` — the WORK-FRONT GENERATOR:
+  run a machine oracle, shard its FAILURES into provably disjoint units, emit the `fanout` manifest.
+  The ORACLE decides the decomposition — never a model.** fleet already had the oracle (`fleet_gate`)
+  and the fan-out (`fanout`) and **nothing in between**: a human hand-wrote the manifest and *guessed*
+  at the decomposition. Both flagship N-agent projects independently converged on the same primitive,
+  and it is **not** a spec registry — it is *run an oracle → get a list of failures → shard the
+  failures into N disjoint units → fan out*. Bun, ~64 agents: *"`cargo check` wrote ≈16,000 errors to
+  a file, **grouped by crate**; the workflow divvied them up among 64 Claudes"* — the compiler's error
+  list **was** the work queue. Anthropic, 16 agents, the **negative** result: *"compiling the Linux
+  kernel is one giant task. Every agent would hit the same bug, fix that bug, and then overwrite each
+  other's changes. Having 16 agents running didn't help because each was stuck solving the same task.
+  **The fix was to use GCC as an online known-good compiler oracle to compare against**"* … *"**This
+  let each agent work in parallel, fixing different bugs in different files**"* — a **decomposition**
+  failure, fixed by an oracle that **shattered one blocking failure into N independent ones**.
+  `fronts` runs the oracle (default `fleet_gate`; any command works — `cargo check`, `tsc --noEmit`,
+  `pytest -q`, `bash -n`, a differential run against a known-good reference), parses its failures into
+  repo-relative paths (rustc/gcc/clang/eslint/shellcheck, rustc's `--> path:l:c`, tsc's `path(l,c):`,
+  python tracebacks, `bash -n`), **filters HARD — a path becomes a work front only if `git ls-files`
+  tracks it** (which is what stops a compiler's noisy output from pointing an agent at
+  `/usr/include/stdio.h`, a `/tmp` artefact, or a hallucinated path), shards by file / `fleet_pkg_for`
+  package / dir, derives each unit's `task` from its own failures, and **self-proves the manifest with
+  `check-claims.py` — the same prover `fanout` runs it through — before writing it** (a generator whose
+  own consumer would reject its output is worthless). **An oracle that exits 0 is not an error:** it
+  prints "oracle is green — no work fronts", emits nothing, exits 0. **`--max-units N` MERGES the
+  smallest fronts and LOGS what it merged; it never DROPS a failing file** (a dropped file is a failure
+  nobody is assigned to, and the oracle stays red forever with no one to say why). **And it REFUSES to
+  manufacture fake parallelism:** when every failure traces to one file/package/dir it emits **exactly
+  one unit** and says **NOT DECOMPOSABLE**, loudly, quoting the failure it is preventing — splitting
+  there *is* the Anthropic 16-agent kernel failure, and catching it *before* you burn 16 agents on it
+  is the whole reason to run the oracle first (`--require-parallel` makes that exit 2, for CI). The
+  answer to NOT DECOMPOSABLE is never a bigger `--jobs`; it is a better oracle. (#49)
+- `tests/negatives/fronts-decompose.sh` — mutation-checked. Stubbed oracles print canned compiler
+  output (no model, no network) and assert: 3 failing files (in rustc, gcc and tsc formats) → 3
+  pairwise-disjoint units that `check-claims.py` **and** `fleet delegate fanout --dry-run` both accept;
+  **5 failures in ONE file → EXACTLY 1 unit + NOT DECOMPOSABLE** (the load-bearing one — it must not
+  emit 5); a green oracle → exit 0, no units, no manifest churn; untracked paths (system headers,
+  `/tmp`, outside-repo, hallucinated, generated) never become units; `--shard-by package` groups a
+  package's 3 files into 1 unit; `--max-units` merges and every failing file is still owned exactly
+  once. Mutants verified to break it: removing the not-decomposable check (whether by staying silent or
+  by sharding per-failure into 5 units), removing the `git ls-files` filter, and making `--max-units`
+  drop instead of merge. (#49)
 
 ## [0.2.0] — 2026-07-14
 **Delegation, adversarial review, and a hard look at the rails.** `fleet` gains three verbs that let
