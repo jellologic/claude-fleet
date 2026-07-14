@@ -9,6 +9,7 @@ __pycache__/
 # >>> claude-fleet (managed) >>>
 .fleet/worktrees/
 .fleet/locks/
+.fleet/delegate/
 .claude/worktrees/
 .claude/settings.local.json
 .claude/agent-claims.json
