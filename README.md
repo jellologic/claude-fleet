@@ -118,6 +118,27 @@ use it outside a throwaway box.
 > fleet hook-rail into a no-op. `fleet delegate` never emits it and refuses to forward it. The
 > durable rails (the OS sandbox and the pre-push gate) survive `--bare`; the hook rails do not.
 
+### What each rail actually binds
+Be clear-eyed about this: the rails are not equal, and the ones that *look* strongest are the
+weakest. If you assume the Python guards confine an agent, you will be wrong.
+
+| Rail | Binds | Survives `--bare`? | Survives a subprocess? | Load-bearing? |
+|---|---|---|---|---|
+| **OS sandbox** (`sandbox-exec`) | every descendant of the worker | yes | **yes** | **yes** |
+| **GitHub ruleset** (server-side) | anything reaching `origin` | yes | yes | **yes** |
+| pre-push hook (`core.hooksPath`) | pushes from this client | yes | yes | partly — client-side, so disable-able by whoever controls the client (`fleet gate-check`, #30) |
+| `coord-guard` / `worktree-guard` (Claude hooks) | Claude's **own** tool calls | **no** | **no** | no — defence-in-depth |
+
+The Python guards catch Claude's Write/Edit/Bash tool calls. They do **not** see a `python3`,
+`node`, `sed -i`, or a nested `claude` that the agent spawns — Claude Code's docs say so plainly.
+Treat them as guardrails against *accidents*, never as a boundary against a determined or confused
+agent. The only things that hold under a subprocess are the OS sandbox and the server.
+
+**Pin your Claude Code version.** The hook rails depend on undocumented-by-default discovery
+behaviour that is explicitly slated to change (`--bare` becoming the `-p` default). Pin the version
+the fleet runs, and re-verify the negatives suite (`tests/negatives/`) on every upgrade — it is
+designed to fail loudly if a rail has silently become a no-op.
+
 ## Requirements
 `bash`/`sh`, `git`, `python3` (guards + ownership gate), and `gh` (issue-driven claiming).
 No node/bun required by the core. `fleet delegate` additionally needs the `claude` CLI and, on

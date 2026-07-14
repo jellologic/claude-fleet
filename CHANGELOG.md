@@ -5,6 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- Docs: a **rail table** stating exactly what each control binds — the OS sandbox and the GitHub ruleset are load-bearing; the Python guards do **not** bind subprocesses and do **not** survive `--bare`, so they are defence-in-depth only. Plus the standing rules: never launch headless agents with `--bare`, and pin the Claude Code version (re-run `tests/negatives/` on upgrade). (#32)
 - `tests/negatives/guard-exit-codes.sh` — tripwire asserting every guard deny path exits **2**, that no input (including malformed JSON and unterminated quotes) yields the fail-open **exit 1**, and that the deliberate exit-0 fail-open paths stay deliberate. Mutation-checked against both guards. Claude Code treats exit 1 as non-blocking and PROCEEDS, so a deny that exits 1 is silently an ALLOW. (#31)
 - `fleet gate-check` (`check-gate-integrity.sh`) — asserts the pre-push merge gate is still wired: `core.hooksPath` resolves to `.fleet/githooks`, the hook exists **and is executable** (git silently skips a non-executable hook), `extensions.worktreeConfig` is unset, and no `.git/worktrees/*/config.worktree` overrides `hooksPath`. Called by `fleet integrate` before it will merge anything (`FLEET_SKIP_GATE_CHECK=1` to opt out where hooks are managed elsewhere). It cannot live *inside* the hook — a disabled hook does not run. (#30)
 - `tests/negatives/gate-integrity.sh` — mutation-checked; it first proves the bypass is real, then asserts every form is denied. (#30)
