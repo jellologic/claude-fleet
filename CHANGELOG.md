@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 ### Added
+- `fleet gate-check` (`check-gate-integrity.sh`) — asserts the pre-push merge gate is still wired: `core.hooksPath` resolves to `.fleet/githooks`, the hook exists **and is executable** (git silently skips a non-executable hook), `extensions.worktreeConfig` is unset, and no `.git/worktrees/*/config.worktree` overrides `hooksPath`. Called by `fleet integrate` before it will merge anything (`FLEET_SKIP_GATE_CHECK=1` to opt out where hooks are managed elsewhere). It cannot live *inside* the hook — a disabled hook does not run. (#30)
+- `tests/negatives/gate-integrity.sh` — mutation-checked; it first proves the bypass is real, then asserts every form is denied. (#30)
 - **`fleet delegate` — delegation as a fleet primitive.** Hands a self-contained work-unit to a
   HEADLESS `claude -p` worker running inside a fleet worktree; the orchestrator (a stronger model,
   or a human) reviews, the worker does the labour. Three verbs: `delegate <wt> "<task>"` (one unit,
@@ -52,6 +54,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - `tests/negatives/reaper-liveness.sh` — negative test (gh stubbed on `PATH`, no network) asserting that a live claim with uncommitted work is not reaped by a default run, that a failing `gh pr list` reaps nothing, and that a genuinely abandoned claim still is. (#22)
 - `tests/negatives/reaper-foreign-claims.sh` — negative test (gh stubbed on `PATH`, local bare repo as `origin`, no network) asserting that a claim held on another host (remote ref, no local worktree) is enumerated at all, that a stale/PR-less/work-free one is FULLY reclaimed, that one with pushed work is NOT reaped (the ahead-count must resolve against `origin/<branch>`, not a nonexistent local ref), that a freshly-taken foreign claim is kept, and that #22's fail-closed guarantees hold through the new path. (#21)
 ### Fixed
+- `coord-guard`: **`core.hooksPath` can no longer silently disable the merge gate.** The pre-push hook *is* fleet's gate and hangs off that config, so `git -c core.hooksPath=/dev/null push origin main` pushed straight to `main` with the gate never firing (reproduced: `* [new branch] main -> main`, exit 0). For a no-CI repo whose only pre-merge check is that hook, this was the whole ballgame. Now denied with `exit 2` in every form: `git -c core.hooksPath=…`, `git config [--worktree|--local|--global] core.hooksPath …`, `git config extensions.worktreeConfig true`, and the `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` env route. Reads (`git config --get core.hooksPath`) are still allowed. Note this guard is defence-in-depth only — per RFC 2a it does not bind subprocesses; the OS sandbox and the GitHub ruleset remain the load-bearing rails. (#30)
 - `fleet reaper`: **no longer destroys a live agent's uncommitted work.** Three independent
   faults, all on the default (non-`--force`, non-`--dry-run`) path: (a) `gh pr list`'s exit
   status was swallowed (`2>/dev/null || true`), so "gh could not answer" (outage / 5xx /
