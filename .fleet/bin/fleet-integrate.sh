@@ -55,10 +55,14 @@ for BR in "$@"; do
 done
 rm -f /tmp/fi-merge.$$
 echo "==================================================================="
-if [ "${SKIP_FINAL:-0}" = 1 ]; then echo "FINAL gate: SKIPPED"; else echo "FINAL gate on integrated result (scoped to changed packages):"; if gate "$(git diff --name-only "$INTEG_BASE..HEAD" 2>/dev/null)"; then echo "  FINAL: PASS"; else echo "  FINAL: FAIL"; fi; fi
+FINAL_RC=0
+if [ "${SKIP_FINAL:-0}" = 1 ]; then echo "FINAL gate: SKIPPED"; else echo "FINAL gate on integrated result (scoped to changed packages):"; if gate "$(git diff --name-only "$INTEG_BASE..HEAD" 2>/dev/null)"; then echo "  FINAL: PASS"; else echo "  FINAL: FAIL"; FINAL_RC=1; fi; fi
 echo "==================================================================="
 echo "INTEGRATION SUMMARY"
 echo "  merged clean (${#PASS[@]}): ${PASS[*]:-none}"
 echo "  rejected     (${#FAIL[@]}): ${FAIL[*]:-none}"
 echo "  '$INTEG' now at $(git rev-parse --short HEAD)"
-[ "${#FAIL[@]}" -eq 0 ]
+# The FINAL gate is not rolled back (unlike a per-branch failure): the integrated
+# tree stays at the broken merge, so the exit code is the only signal a caller gets.
+[ "$FINAL_RC" -eq 0 ] || echo "  WARNING: FINAL gate FAILED — '$INTEG' is BROKEN; do not merge it" >&2
+[ "${#FAIL[@]}" -eq 0 ] && [ "$FINAL_RC" -eq 0 ]

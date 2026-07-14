@@ -15,3 +15,7 @@ __pycache__/
 .claude/settings.local.json
 .claude/agent-claims.json
 # <<< claude-fleet (managed) <<<
+
+# fleet_gate runs py_compile, which writes __pycache__/ into every worktree.
+__pycache__/
+*.pyc
