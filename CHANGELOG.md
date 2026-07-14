@@ -6,7 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 ### Added
 - Demo GIF in the README, rendered from `assets/demo.tape` (charmbracelet/vhs) via `assets/demo-setup.sh`. (#11)
+- `tests/negatives/reaper-liveness.sh` — negative test (gh stubbed on `PATH`, no network) asserting that a live claim with uncommitted work is not reaped by a default run, that a failing `gh pr list` reaps nothing, and that a genuinely abandoned claim still is. (#22)
 ### Fixed
+- `fleet reaper`: **no longer destroys a live agent's uncommitted work.** Three independent
+  faults, all on the default (non-`--force`, non-`--dry-run`) path: (a) `gh pr list`'s exit
+  status was swallowed (`2>/dev/null || true`), so "gh could not answer" (outage / 5xx /
+  rate-limit / unauthenticated) was indistinguishable from "there is no PR" — one run during
+  a GitHub outage mass-reaped every not-yet-committed claim in the fleet; (b) with no PR, the
+  only other signal was commits ahead of `main`, and since `fleet claim` writes exactly ONE
+  empty claim commit, a live agent that had not committed yet sat at `ahead == 1` forever and
+  was classified `ORPHAN`; (c) that path force-deleted the remote ref, releasing the CAS lock
+  so a second agent could claim the same issue. The reaper now fails closed on any `gh`
+  failure, refuses to reap a worktree with uncommitted work (`git status --porcelain`) without
+  `--force`, and never drops the remote ref implicitly (`--force`/`--delete-remote` required). (#22)
 - `fleet-integrate`: the FINAL gate now scopes to the union of changed packages (`git diff <base>..HEAD` → `fleet_pkg_for`) instead of always building the full tree, so unchanged packages (e.g. a web app needing a generated route tree absent in the integration worktree) no longer cause a false FAIL. (#13)
 - Example `fleet_bootstrap` + `config.sh.example`: guard against bun's fresh-worktree no-op with `[ -d node_modules ] || bun install --force`. (#14)
 - Example `fleet_gate` + `config.sh.example`: run **build before check-types** (two sequential `turbo` invocations, not one `turbo run check-types build`) so codegen like the TanStack `routeTree.gen.ts` exists before the typecheck — merges that ADD routes/codegen no longer false-FAIL against a stale generated file. (#16)
