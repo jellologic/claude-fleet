@@ -8,6 +8,35 @@
 #   delegate <wt> "<task>"                        one unit, headless, in that worktree
 #   feedback <wt> "<fix…>"                        --resume that worktree's session, IN CONTEXT
 #   loop     <wt> --until '<check>' "<task>"      run → check → feed the failure back → repeat
+#   review   <wt> [--reviewers N] [--base <ref>]  N adversarial diff-only reviewers → EVIDENCE
+#
+# ── `review`: reviewers produce EVIDENCE, the gate produces VERDICTS (#36) ─────────────
+# Bun ran exactly this loop over a 535k-line Zig→Rust port (bun.com/blog/bun-in-rust):
+# "1 implementer, 2 or more adversarial reviewers per implementer. The reviewer's only job:
+# find bugs & reasons why the code does not work" — and the reviewer "gets the diff and
+# nothing else — none of the implementer's reasoning". Hence: N=2 by default, CONTEXT-
+# ASYMMETRIC input (the diff, never the implementer's session/transcript/rationale), and a
+# REFUTE-framed prompt.
+#
+# But review was NEVER Bun's correctness gate: that was `cargo check` plus a suite with
+# 1,386,826 assertions. Anthropic's C compiler used differential testing against GCC. The
+# LLM-as-judge literature is damning on using a reviewer AS a gate (judge-vs-oracle Cohen's
+# kappa 0.21/0.10; ten reviewers unanimously endorsed a padding oracle that did not exist —
+# killed by ONE instance that actually compiled the code and ran three tests). The single
+# intervention with a measured ~3x improvement is the FIX-GUIDED VERIFICATION FILTER: make
+# every finding ship a runnable artifact, then let the REAL test suite adjudicate
+# original-vs-patched.
+#
+# So `review`:
+#   * gives each reviewer the DIFF and nothing else, with the filesystem READ-ONLY;
+#   * DISCARDS any finding with no executable artifact (a repro or a patch) — that class,
+#     "vague logic error with no falsifiable counterexample", is precisely what LLM
+#     reviewers over-produce;
+#   * ADJUDICATES every surviving finding in a THROWAWAY worktree: a `repro` that PASSES on
+#     HEAD is REFUTED; a `patch` that does not apply, or that leaves `fleet_gate`'s outcome
+#     unchanged, is UNSUBSTANTIATED;
+#   * NEVER BLOCKS. Its exit code says whether the review RAN, not whether the code is good.
+#     `fleet_gate` / the pre-push hook is the gate. `review` is advisory evidence.
 #
 # ── Why an OS sandbox and not the Python write-guard ──────────────────────────────────
 # The worker runs with `--dangerously-skip-permissions`. fleet's `PreToolUse` write-guard
@@ -35,6 +64,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 : "${FLEET_DELEGATE_RETRIES:=4}"      # attempts per worker invocation (back-pressure, RFC part 3)
 : "${FLEET_DELEGATE_MAX_ITERS:=3}"    # default `loop --max-iters`
 : "${FLEET_WORKER_TIMEOUT_MS:=3000000}"
+: "${FLEET_REVIEW_REVIEWERS:=2}"      # Bun's number. Spend budget on DECORRELATION, not count.
 
 usage() {
   cat <<'EOF'
@@ -43,6 +73,14 @@ usage: fleet delegate <verb> [args]
   feedback <worktree> "<fix…>"                       resume that worktree's session, in context
   loop     <worktree> --until '<check>' "<task>" [--max-iters N]
                                                      run → check → feed failure back → repeat
+  review   <worktree> [--reviewers N] [--base <ref>]
+                                                     N (default 2) ADVERSARIAL, READ-ONLY,
+                                                     diff-only reviewers. Every finding must
+                                                     ship a repro or a patch; the artifact is
+                                                     EXECUTED in a throwaway worktree and
+                                                     adjudicated by `fleet_gate`. ALWAYS exits
+                                                     0 when the review RAN — review is advisory
+                                                     EVIDENCE; the GATE is the gate.
 
 worktree: an absolute path, or a name under .fleet/worktrees/ (e.g. `agent/issue-23`).
 
@@ -52,6 +90,13 @@ worker provider (all optional; unset = inherit the ambient Anthropic default):
   FLEET_WORKER_TOKEN       → same, from the env (the FILE is preferred)
   FLEET_WORKER_MODEL       → ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL (one endpoint → all tiers)
   FLEET_WORKER_TIMEOUT_MS  → API_TIMEOUT_MS (default 3000000)
+
+reviewer provider (each falls back to its FLEET_WORKER_* twin when unset):
+  FLEET_REVIEW_BASE_URL / FLEET_REVIEW_TOKEN_FILE / FLEET_REVIEW_TOKEN / FLEET_REVIEW_MODEL
+  Point these at a DIFFERENT model family from the worker. Letting the implementer's own
+  model grade its own diff is the one thing you must not do (self-preference bias): the
+  errors correlate, and a reviewer that shares the implementer's false premise will
+  cheerfully confirm it.
 
 confinement:
   FLEET_DELEGATE_SANDBOX=1 (default)  require an OS sandbox; die if unavailable
@@ -94,8 +139,18 @@ state_dir() {  # $1 = absolute worktree path
 # a hole straight through confinement for any repo that happens to live under /tmp or
 # $TMPDIR — so the repo root and every SIBLING worktree are re-denied AFTERWARDS, and only
 # this worktree + the shared git dir are re-allowed. Order here is load-bearing.
-sandbox_profile() {  # $1 = worktree, $2 = profile path to write
-  local wt="$1" out="$2" common gitroot w rw sibs=""
+#
+# A THIRD argument switches the profile to READ-ONLY (reviewer) mode: the worktree AND the
+# shared .git are DENIED, and the only writable project-adjacent path is the per-reviewer
+# scratch dir. That is the one structural difference between a `delegate` worker (which must
+# be able to edit and commit) and a `review` reviewer (which must not be able to touch the
+# code it is judging — a reviewer that can "fix" the diff is no longer an independent
+# observer of it). The last-match-wins ordering matters even more here: the broad /tmp +
+# $TMPDIR allow that Claude Code and node genuinely need would otherwise re-open the worktree
+# of any repo living under a scratch dir, so worktree/.git are re-denied AFTER it and ONLY
+# the scratch dir is re-allowed at the very end.
+sandbox_profile() {  # $1 = worktree, $2 = profile path to write, $3 = scratch dir → READ-ONLY mode
+  local wt="$1" out="$2" scratch="${3:-}" common gitroot w rw sibs=""
   common="$(cd "$(git -C "$wt" rev-parse --git-common-dir)" && pwd -P)" \
     || die "cannot resolve the shared git dir for $wt"
   gitroot="${common%/.git}"
@@ -112,10 +167,12 @@ sandbox_profile() {  # $1 = worktree, $2 = profile path to write
     echo '(version 1)'
     echo '(allow default)'
     echo '(deny file-write*)'
-    echo "(allow file-write* (subpath \"$wt\"))"
-    # The shared .git common dir: git MUST write here from a linked worktree (objects,
-    # refs, logs, and .git/worktrees/<name>/{HEAD,index}) or `git commit` cannot work.
-    echo "(allow file-write* (subpath \"$common\"))"
+    if [ -z "$scratch" ]; then
+      echo "(allow file-write* (subpath \"$wt\"))"
+      # The shared .git common dir: git MUST write here from a linked worktree (objects,
+      # refs, logs, and .git/worktrees/<name>/{HEAD,index}) or `git commit` cannot work.
+      echo "(allow file-write* (subpath \"$common\"))"
+    fi
     # Scratch + the caches Claude Code and the toolchain need.
     echo '(allow file-write* (subpath "/tmp") (subpath "/private/tmp") (subpath "/var/folders") (subpath "/private/var/folders"))'
     [ -n "${TMPDIR:-}" ] && echo "(allow file-write* (subpath \"${TMPDIR%/}\"))"
@@ -123,18 +180,26 @@ sandbox_profile() {  # $1 = worktree, $2 = profile path to write
     echo '(allow file-write-data (regex #"^/dev/"))'
     echo '(allow file-ioctl)'
     # ---- LAST WORD (see the note above): the repo, and every sibling worktree, are
-    # ---- denied even if they live under /tmp or $TMPDIR. Then this worktree is restored.
+    # ---- denied even if they live under /tmp or $TMPDIR.
     echo "(deny file-write* (subpath \"$gitroot\"))"
     [ -n "$sibs" ] && echo "(deny file-write*$sibs)"
-    echo "(allow file-write* (subpath \"$wt\"))"
-    echo "(allow file-write* (subpath \"$common\"))"
+    if [ -n "$scratch" ]; then
+      # READ-ONLY reviewer: the worktree and the shared .git stay DENIED — a reviewer cannot
+      # mutate, stage, commit or `git checkout` the code it is reviewing. Its findings go in
+      # the scratch dir, which is the last word and lives outside the repo.
+      echo "(deny file-write* (subpath \"$wt\") (subpath \"$common\"))"
+      echo "(allow file-write* (subpath \"$scratch\"))"
+    else
+      echo "(allow file-write* (subpath \"$wt\"))"
+      echo "(allow file-write* (subpath \"$common\"))"
+    fi
   } > "$out"
 }
 
 # Emits the sandbox command PREFIX (as positional args) into the global SANDBOX_ARGV, or
 # dies. Fail closed: sandboxing is on unless someone explicitly, loudly turns it off.
 SANDBOX_ARGV=""
-sandbox_prefix() {  # $1 = worktree, $2 = profile path
+sandbox_prefix() {  # $1 = worktree, $2 = profile path, $3 = scratch dir → READ-ONLY mode
   SANDBOX_ARGV=""
   if [ "$FLEET_DELEGATE_SANDBOX" = "0" ]; then
     echo "  ****************************************************************" >&2
@@ -149,7 +214,7 @@ sandbox_prefix() {  # $1 = worktree, $2 = profile path
   case "$(uname -s)" in
     Darwin)
       [ -x "$FLEET_DELEGATE_SANDBOX_EXEC" ] || die "FLEET_DELEGATE_SANDBOX=1 but $FLEET_DELEGATE_SANDBOX_EXEC is missing — refusing to run a --dangerously-skip-permissions worker unconfined"
-      sandbox_profile "$1" "$2"
+      sandbox_profile "$1" "$2" "${3:-}"
       SANDBOX_ARGV="$FLEET_DELEGATE_SANDBOX_EXEC -f $2"
       ;;
     *)
@@ -181,13 +246,42 @@ esac
 # is NOT retried — that is a job for `feedback`/`loop`, not for a retry.
 _TRANSIENT_RE='429|529|rate.?limit|overloaded|Overloaded|too many requests|502|503|504|Bad Gateway|Service Unavailable|Gateway Time-?out|Connection reset|Connection refused|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network error'
 
-# Read the worker's bearer token WITHOUT ever putting it on a command line. The file is
+# ── which provider is the CURRENT invocation using? ───────────────────────────────────
+# The implementer and the reviewer must be able to be DIFFERENT MODEL FAMILIES — that is
+# the decorrelation point of the whole review design, and it is only possible because each
+# is a separate process (ANTHROPIC_BASE_URL/_AUTH_TOKEN are global per process). The active
+# role's provider is selected into ACTIVE_* once, and run_worker/worker_banner/worker_token
+# only ever read ACTIVE_*.
+ACTIVE_ROLE="worker"
+ACTIVE_BASE_URL=""; ACTIVE_MODEL=""; ACTIVE_TOKEN_FILE=""; ACTIVE_TOKEN=""; ACTIVE_TOKEN_VAR=""
+use_worker_provider() {
+  ACTIVE_ROLE="worker"
+  ACTIVE_BASE_URL="${FLEET_WORKER_BASE_URL:-}"
+  ACTIVE_MODEL="${FLEET_WORKER_MODEL:-}"
+  ACTIVE_TOKEN_FILE="${FLEET_WORKER_TOKEN_FILE:-}"
+  ACTIVE_TOKEN="${FLEET_WORKER_TOKEN:-}"
+  ACTIVE_TOKEN_VAR="FLEET_WORKER_TOKEN"
+}
+# Each FLEET_REVIEW_* falls back to its FLEET_WORKER_* twin. If they end up IDENTICAL the
+# implementer's own model is grading its own diff — say so, loudly: self-preference bias is
+# the one failure mode this design exists to avoid.
+use_review_provider() {
+  ACTIVE_ROLE="reviewer"
+  ACTIVE_BASE_URL="${FLEET_REVIEW_BASE_URL:-${FLEET_WORKER_BASE_URL:-}}"
+  ACTIVE_MODEL="${FLEET_REVIEW_MODEL:-${FLEET_WORKER_MODEL:-}}"
+  ACTIVE_TOKEN_FILE="${FLEET_REVIEW_TOKEN_FILE:-${FLEET_WORKER_TOKEN_FILE:-}}"
+  ACTIVE_TOKEN="${FLEET_REVIEW_TOKEN:-${FLEET_WORKER_TOKEN:-}}"
+  ACTIVE_TOKEN_VAR="FLEET_REVIEW_TOKEN"
+}
+use_worker_provider
+
+# Read the active role's bearer token WITHOUT ever putting it on a command line. The file is
 # preferred over the env; a non-600 file is a loud warning (a token readable by every
 # process on the box is not a secret).
 worker_token() {
-  local f="${FLEET_WORKER_TOKEN_FILE:-}" mode
+  local f="$ACTIVE_TOKEN_FILE" mode
   if [ -n "$f" ]; then
-    [ -f "$f" ] || die "FLEET_WORKER_TOKEN_FILE=$f does not exist"
+    [ -f "$f" ] || die "token file $f does not exist"
     mode="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null || echo '')"
     if [ -n "$mode" ] && [ "$mode" != "600" ]; then
       echo "  WARNING: $f is mode $mode, not 600 — a worker token readable by other users/processes is not a secret. chmod 600 it." >&2
@@ -196,18 +290,18 @@ worker_token() {
     tr -d '\r\n' < "$f"
     return 0
   fi
-  [ -n "${FLEET_WORKER_TOKEN:-}" ] && printf '%s' "$FLEET_WORKER_TOKEN"
+  [ -n "$ACTIVE_TOKEN" ] && printf '%s' "$ACTIVE_TOKEN"
   return 0
 }
 
-# Describe the worker's provider WITHOUT ever printing the token.
+# Describe the active role's provider WITHOUT ever printing the token.
 worker_banner() {
-  local url="${FLEET_WORKER_BASE_URL:-<ambient Anthropic default>}"
-  local model="${FLEET_WORKER_MODEL:-<provider default>}"
+  local url="${ACTIVE_BASE_URL:-<ambient Anthropic default>}"
+  local model="${ACTIVE_MODEL:-<provider default>}"
   local auth="inherited"
-  [ -n "${FLEET_WORKER_TOKEN_FILE:-}" ] && auth="file:${FLEET_WORKER_TOKEN_FILE} (redacted)"
-  [ -z "${FLEET_WORKER_TOKEN_FILE:-}" ] && [ -n "${FLEET_WORKER_TOKEN:-}" ] && auth="env:FLEET_WORKER_TOKEN (redacted)"
-  echo "  worker: endpoint=$url model=$model auth=$auth timeout=${FLEET_WORKER_TIMEOUT_MS}ms"
+  [ -n "$ACTIVE_TOKEN_FILE" ] && auth="file:${ACTIVE_TOKEN_FILE} (redacted)"
+  [ -z "$ACTIVE_TOKEN_FILE" ] && [ -n "$ACTIVE_TOKEN" ] && auth="env:${ACTIVE_TOKEN_VAR} (redacted)"
+  echo "  $ACTIVE_ROLE: endpoint=$url model=$model auth=$auth timeout=${FLEET_WORKER_TIMEOUT_MS}ms"
 }
 
 _json_get() {  # $1 = json file, $2 = dotted key → prints value or empty
@@ -245,15 +339,15 @@ run_worker() {
     (
       # The provider is configured ENTIRELY through the child's environment — never argv,
       # so the token cannot show up in `ps`, in a log, or in a crash dump of this shell.
-      [ -n "${FLEET_WORKER_BASE_URL:-}" ] && export ANTHROPIC_BASE_URL="$FLEET_WORKER_BASE_URL"
+      [ -n "$ACTIVE_BASE_URL" ] && export ANTHROPIC_BASE_URL="$ACTIVE_BASE_URL"
       [ -n "$tok" ] && export ANTHROPIC_AUTH_TOKEN="$tok"
-      if [ -n "${FLEET_WORKER_MODEL:-}" ]; then
+      if [ -n "$ACTIVE_MODEL" ]; then
         # ONE endpoint per process → every tier must point at the same model, or a
         # Sonnet-tier subagent would be dispatched to a model this gateway does not serve.
-        export ANTHROPIC_DEFAULT_OPUS_MODEL="$FLEET_WORKER_MODEL"
-        export ANTHROPIC_DEFAULT_SONNET_MODEL="$FLEET_WORKER_MODEL"
-        export ANTHROPIC_DEFAULT_HAIKU_MODEL="$FLEET_WORKER_MODEL"
-        export ANTHROPIC_MODEL="$FLEET_WORKER_MODEL"
+        export ANTHROPIC_DEFAULT_OPUS_MODEL="$ACTIVE_MODEL"
+        export ANTHROPIC_DEFAULT_SONNET_MODEL="$ACTIVE_MODEL"
+        export ANTHROPIC_DEFAULT_HAIKU_MODEL="$ACTIVE_MODEL"
+        export ANTHROPIC_MODEL="$ACTIVE_MODEL"
       fi
       export API_TIMEOUT_MS="$FLEET_WORKER_TIMEOUT_MS"
       cd "$wt" || exit 97
@@ -329,6 +423,225 @@ delegate_once() {
   return "$rc"
 }
 
+# ── review: adversarial, diff-only, read-only reviewers → EVIDENCE (#36) ─────────────
+# Resolve the ref to diff against. Default: origin/$FLEET_MAIN, then $FLEET_MAIN.
+review_base() {  # $1 = worktree, $2 = explicit --base or ""
+  local wt="$1" b="$2" c
+  if [ -n "$b" ]; then
+    git -C "$wt" rev-parse --verify --quiet "$b^{commit}" >/dev/null \
+      || die "--base $b is not a commit in $wt"
+    printf '%s' "$b"; return 0
+  fi
+  for c in "origin/$FLEET_MAIN" "$FLEET_MAIN"; do
+    if git -C "$wt" rev-parse --verify --quiet "$c^{commit}" >/dev/null; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+  die "cannot resolve a diff base (tried origin/$FLEET_MAIN and $FLEET_MAIN) — pass --base <ref>"
+}
+
+# The refute-framed prompt. It carries the DIFF and NOTHING ELSE: no session id, no
+# --resume, no transcript, no rationale. Context asymmetry is the point — a reviewer that
+# has read the implementer's justification is no longer an independent observer, it is an
+# audience.
+review_prompt() {  # $1 = scratch dir, $2 = base ref
+  cat <<EOF
+You are an ADVERSARIAL REVIEWER. You did NOT write this code, and you are deliberately NOT
+being shown the implementer's reasoning, transcript, session, or intent. Your ONLY job is to
+FIND THE WAY THIS DIFF IS WRONG. Assume it is broken and prove it.
+
+The diff under review (\`git diff $2...HEAD\`) is at:
+    $1/diff.patch
+You may READ the whole repository around it. The filesystem is READ-ONLY to you: do not try
+to edit, stage, commit or check anything out. The ONLY directory you can write to is
+    $1            (also exported as \$FLEET_REVIEW_SCRATCH)
+
+YOU ARE NOT A GATE. \`fleet_gate\` — the real build and test suite, plus the pre-push hook —
+decides whether this code merges. You produce EVIDENCE, never verdicts. An assertion with no
+runnable artifact is worthless here and will be DISCARDED, not escalated.
+
+EVERY finding MUST ship an executable artifact. Write ONE JSON object per finding to
+    $1/findings/<n>.json
+using EXACTLY one of these two shapes:
+
+  {"title": "...", "explanation": "...", "repro": "<shell command>"}
+      A shell command, run from the repo root, that FAILS (exits non-zero) on the CURRENT
+      HEAD and thereby demonstrates the bug. It will be EXECUTED. If it passes, your finding
+      is REFUTED and discarded.
+
+  {"title": "...", "explanation": "...", "patch": "<unified diff>"}
+      A \`git apply\`-able unified diff (a/… b/… paths) that FIXES the bug. It will be applied
+      to a THROWAWAY copy of HEAD and \`fleet_gate\` will adjudicate patched vs unpatched. If it
+      does not apply, or if it leaves the gate's outcome unchanged, it is UNSUBSTANTIATED and
+      discarded.
+
+If you cannot produce a repro or a patch for a suspicion, DO NOT WRITE IT DOWN. A "vague logic
+error with no falsifiable counterexample" is exactly the noise this filter exists to delete.
+Reporting ZERO findings is a perfectly good outcome. Reporting a confident, unfalsifiable one
+is not.
+EOF
+}
+
+# Adjudicate ONE finding in the throwaway worktree. Echoes "SUBSTANTIATED\t<how>" or
+# "DISCARDED\t<why>". This is the fix-guided verification filter: the REAL gate — not a
+# model — decides whether the evidence holds.
+review_adjudicate() {  # $1 = finding json, $2 = adj worktree, $3 = baseline gate rc, $4 = scratch
+  local f="$1" adj="$2" base_rc="$3" scratch="$4" repro patch pf rc grc log
+  repro="$(_json_get "$f" repro)"
+  patch="$(_json_get "$f" patch)"
+  log="$scratch/adjudication.log"
+
+  git -C "$adj" reset -q --hard HEAD >/dev/null 2>&1
+  git -C "$adj" clean -qfd >/dev/null 2>&1
+
+  if [ -n "$repro" ]; then
+    # The repro must FAIL on HEAD. A repro that passes does not reproduce anything.
+    ( cd "$adj" && sh -c "$repro" ) >>"$log" 2>&1; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      printf 'DISCARDED\tREFUTED: the repro `%s` PASSES (exit 0) on HEAD — the claimed bug does not reproduce\n' "$repro"
+    else
+      printf 'SUBSTANTIATED\trepro FAILS on HEAD (exit %s): %s\n' "$rc" "$repro"
+    fi
+    return 0
+  fi
+
+  if [ -n "$patch" ]; then
+    pf="$scratch/$(basename "$f").patch"
+    printf '%s\n' "$patch" > "$pf"
+    if ! git -C "$adj" apply --check "$pf" >>"$log" 2>&1; then
+      printf 'DISCARDED\tthe patch does not apply to HEAD (git apply --check failed)\n'
+      return 0
+    fi
+    git -C "$adj" apply "$pf" >>"$log" 2>&1 || {
+      printf 'DISCARDED\tthe patch does not apply to HEAD (git apply failed)\n'; return 0; }
+    grc=0; ( cd "$adj" && fleet_gate ) >>"$log" 2>&1 || grc=$?
+    git -C "$adj" reset -q --hard HEAD >/dev/null 2>&1
+    git -C "$adj" clean -qfd >/dev/null 2>&1
+    if [ "$base_rc" -ne 0 ] && [ "$grc" -eq 0 ]; then
+      printf 'SUBSTANTIATED\tthe patch flips fleet_gate RED (%s) → GREEN (0) on a throwaway copy of HEAD\n' "$base_rc"
+      return 0
+    fi
+    if [ "$base_rc" -eq 0 ] && [ "$grc" -ne 0 ]; then
+      printf 'DISCARDED\tthe patch BREAKS fleet_gate (0 → %s) — the "fix" is a regression\n' "$grc"
+      return 0
+    fi
+    printf 'DISCARDED\tUNSUBSTANTIATED: fleet_gate outcome UNCHANGED by the patch (unpatched=%s patched=%s) — the real oracle cannot see the claimed bug (fix-guided verification filter)\n' "$base_rc" "$grc"
+    return 0
+  fi
+
+  printf 'DISCARDED\tNO EXECUTABLE ARTIFACT — neither a repro nor a patch. A vague logic error with no falsifiable counterexample is not a finding.\n'
+}
+
+review_run() {  # $1 = worktree, $2 = N reviewers, $3 = base ref or ""
+  local wt="$1" n="$2" base="$3"
+  local work adj head_sha diff_f i scratch prof out rc f verdict how title
+  local n_raw=0 n_sub=0 n_disc=0 base_rc=0
+
+  base="$(review_base "$wt" "$base")" || exit 1
+  head_sha="$(git -C "$wt" rev-parse HEAD)" || die "cannot resolve HEAD in $wt"
+
+  work="$(mktemp -d -t fleet-review)"; work="$(cd "$work" && pwd -P)"
+  adj="$work/adjudication"
+  # shellcheck disable=SC2064
+  trap "git -C '$wt' worktree remove --force '$adj' >/dev/null 2>&1; rm -rf '$work'" EXIT INT TERM
+
+  diff_f="$work/diff.patch"
+  git -C "$wt" diff "$base...HEAD" > "$diff_f" || die "cannot diff $base...HEAD in $wt"
+
+  echo "review → $wt"
+  echo "  base: $base   head: $head_sha   reviewers: $n"
+  if [ ! -s "$diff_f" ]; then
+    echo "  nothing to review (no diff against $base)"
+    exit 0
+  fi
+  echo "  diff: $(wc -l < "$diff_f" | tr -d ' ') lines"
+
+  use_review_provider
+  if [ "$ACTIVE_MODEL" = "${FLEET_WORKER_MODEL:-}" ] && [ "$ACTIVE_BASE_URL" = "${FLEET_WORKER_BASE_URL:-}" ]; then
+    echo "  NOTE: the reviewer and the implementer share a provider/model. Errors CORRELATE:" >&2
+    echo "        a model grading its own diff is subject to self-preference bias and will" >&2
+    echo "        confirm its own false premises. Set FLEET_REVIEW_{MODEL,BASE_URL,TOKEN_FILE}" >&2
+    echo "        to a DIFFERENT family. (This is a warning, not an error — review is advisory.)" >&2
+  fi
+
+  mkdir -p "$work/findings"
+  i=1
+  while [ "$i" -le "$n" ]; do
+    scratch="$work/reviewer-$i"
+    mkdir -p "$scratch/findings"
+    cp "$diff_f" "$scratch/diff.patch"
+    prof="$work/reviewer-$i.sb"
+    out="$work/reviewer-$i.json"
+
+    echo "  --- reviewer $i/$n (adversarial, diff-only, READ-ONLY)"
+    sandbox_prefix "$wt" "$prof" "$scratch"
+    [ -n "$SANDBOX_ARGV" ] \
+      && echo "  sandbox: sandbox-exec — the worktree AND the shared .git are READ-ONLY; writes only to $scratch"
+    worker_banner
+
+    # NO session id, NO --resume, NO transcript: the reviewer gets the diff and nothing else.
+    export FLEET_REVIEW_SCRATCH="$scratch"
+    run_worker "$wt" "$prof" "$out" "$(review_prompt "$scratch" "$base")" ""
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      # INFRASTRUCTURE failure — the reviewer could not be RUN. This, and only this, is fatal.
+      echo "  reviewer $i could not be run (exit $rc)" >&2
+      [ -s "$out" ] && sed 's/^/    | /' "$out" >&2
+      exit "$rc"
+    fi
+    report "$out" || echo "  (reviewer $i reported an error; its findings, if any, are still adjudicated)"
+
+    for f in "$scratch"/findings/*.json; do
+      [ -f "$f" ] || continue
+      cp "$f" "$work/findings/r$i-$(basename "$f")"
+      n_raw=$((n_raw + 1))
+    done
+    i=$((i + 1))
+  done
+
+  echo "  --- adjudication ($n_raw raw finding(s)) — in a THROWAWAY worktree, never in $wt"
+  git -C "$wt" worktree add -q --detach "$adj" HEAD \
+    || die "cannot create the throwaway adjudication worktree — refusing to adjudicate inside the worktree under review"
+  base_rc=0; ( cd "$adj" && fleet_gate ) >"$work/gate-base.log" 2>&1 || base_rc=$?
+  echo "  fleet_gate on UNPATCHED HEAD: exit $base_rc  ← the oracle every patch is measured against"
+
+  : > "$work/SUBSTANTIATED"; : > "$work/DISCARDED"
+  for f in "$work"/findings/*.json; do
+    [ -f "$f" ] || continue
+    title="$(_json_get "$f" title)"; [ -n "$title" ] || title="(untitled)"
+    verdict="$(review_adjudicate "$f" "$adj" "$base_rc" "$work" | head -1)"
+    how="$(printf '%s' "$verdict" | cut -f2-)"
+    case "$verdict" in
+      SUBSTANTIATED*)
+        n_sub=$((n_sub + 1))
+        { printf '  [%s] %s\n' "$(basename "$f" .json)" "$title"
+          printf '      EVIDENCE : %s\n' "$how"
+          printf '      why      : %s\n' "$(_json_get "$f" explanation)"; } >> "$work/SUBSTANTIATED" ;;
+      *)
+        n_disc=$((n_disc + 1))
+        { printf '  [%s] %s\n' "$(basename "$f" .json)" "$title"
+          printf '      DISCARDED: %s\n' "$how"; } >> "$work/DISCARDED" ;;
+    esac
+  done
+
+  echo ""
+  echo "══ review report — $wt @ ${head_sha} (base $base) ═══════════════════════════════"
+  echo ""
+  echo "SUBSTANTIATED ($n_sub of $n_raw) — the evidence ACTUALLY EXECUTED:"
+  if [ "$n_sub" -eq 0 ]; then echo "  (none)"; else cat "$work/SUBSTANTIATED"; fi
+  echo ""
+  echo "DISCARDED ($n_disc of $n_raw) — the evidence did not hold up:"
+  if [ "$n_disc" -eq 0 ]; then echo "  (none)"; else cat "$work/DISCARDED"; fi
+  echo ""
+  echo "  review is ADVISORY EVIDENCE, not a verdict, and it does NOT block: this command"
+  echo "  exits 0 whenever the review RAN, findings or no findings. \`fleet_gate\` and the"
+  echo "  pre-push hook are THE GATE. Bun reviewed 535k lines with 2 adversarial reviewers"
+  echo "  per implementer — and their oracle was still \`cargo check\` + 1.39M test assertions,"
+  echo "  never the reviewers. Treat every line above as a lead to verify, not a decision."
+  echo "═══════════════════════════════════════════════════════════════════════════════"
+  exit 0
+}
+
 # ── verbs ────────────────────────────────────────────────────────────────────────────
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$cmd" in
@@ -398,11 +711,24 @@ $last"
     exit 1
     ;;
 
-  # `review <wt> --reviewers N` (adversarial diff-only reviewers) and `fanout <manifest>
-  # --jobs N` (concurrency-capped independent units) are the other two RFC verbs. Both are
-  # OUT OF SCOPE for this PR and land as follow-ups — they compose on top of these three.
-  review|fanout)
-    die "\`$cmd\` is not implemented yet — it is a follow-up to #23 (this PR ships delegate/feedback/loop)"
+  review)
+    wt="$(resolve_wt "${1:?usage: fleet delegate review <worktree> [--reviewers N] [--base <ref>]}")" || exit 1; shift
+    n="$FLEET_REVIEW_REVIEWERS"; base=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reviewers) n="${2:?--reviewers needs N}"; shift 2 ;;
+      --base)      base="${2:?--base needs a ref}"; shift 2 ;;
+      -*)          die "unknown arg: $1" ;;
+      *)           die "review takes no task: the reviewer gets the DIFF AND NOTHING ELSE — no brief, no rationale, no session. That asymmetry is the design (unexpected argument: $1)" ;;
+    esac; done
+    case "$n" in ''|*[!0-9]*) die "--reviewers needs a positive integer" ;; esac
+    [ "$n" -ge 1 ] || die "--reviewers needs a positive integer"
+    review_run "$wt" "$n" "$base"
+    ;;
+
+  # `fanout <manifest> --jobs N` (concurrency-capped independent units) is the last RFC verb;
+  # it is OUT OF SCOPE here and lands as a follow-up — it composes on top of these four.
+  fanout)
+    die "\`fanout\` is not implemented yet — it is a follow-up to #23/#36"
     ;;
 
   ""|-h|--help) usage ;;
