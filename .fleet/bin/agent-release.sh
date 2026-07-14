@@ -21,7 +21,7 @@ git -C "$ROOT" branch -D "$BRANCH" 2>/dev/null || true
 ledger_remove "$ISSUE" || true
 if [ -f "$ROOT/.claude/agent-claims.json" ] && command -v python3 >/dev/null && _coord_lock claims; then
   python3 "$HERE/claims-edit.py" "$ROOT/.claude/agent-claims.json" remove "issue-$ISSUE" 2>/dev/null || true
-  _coord_unlock claims
+  _coord_unlock claims || true   # warns (stderr) if our lock was stolen; cleanup continues
 fi
 gh issue edit "$ISSUE" --add-label "$LABEL_READY" --remove-label "$LABEL_WORKING" >/dev/null 2>&1 || true
 if [ "$DEL_REMOTE" = 1 ]; then git -C "$ROOT" push origin --delete "$BRANCH" >/dev/null 2>&1 || echo "WARN: could not delete remote $BRANCH"; fi

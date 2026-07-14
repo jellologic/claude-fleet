@@ -275,6 +275,11 @@ Two functions are the only stack-specific bits:
 
 Plus optional vars: `FLEET_MAIN`, `FLEET_LOCKFILE`, `FLEET_GENERATED_RE`, `FLEET_BRANCH_RE`, …
 
+`FLEET_LOCK_STALE_SECS` (default `60`) tunes the coordination mutex: a lock older than this is
+*inspected*, not summarily broken — it is only reclaimed if its recorded owner is provably gone
+(`kill -0`), so a slow-but-alive holder (a cold `git worktree add`, a big manifest rewrite) keeps
+its lock instead of having it stolen mid-critical-section.
+
 ## Layout (vendored into your repo)
 ```
 .fleet/{config.sh,lib/,bin/,githooks/,worktrees/,locks/}
