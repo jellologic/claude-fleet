@@ -301,4 +301,56 @@ out="$($S check m.json 2>&1)"; rc=$?
   || fail "\`fleet spec check\` on a CONFORMING repo with a hook wired exited $rc — the conformance stage must not break the existing static proofs"
 echo "    ok: NO REGRESSION — a manifest with no ports is unaffected, and \`spec check\` still passes on a conforming repo"
 
-echo "PASS: a frozen port is no longer DECORATIVE — an implementation that DRIFTS from it (port: put/get/all; impl: add/get/complete/list, the artifact untouched and every graph proof green) is CAUGHT with exit 2, naming the port, the unit and the drift; a MISSING METHOD and a WRONG PARAMETER LIST are both caught; a CONFORMING implementation passes; the check is a PRE-GATE that turns fleet_gate RED; the shipped stdlib spec-conform.py works standalone; and with NO fleet_spec_conform hook configured, BOTH \`spec check\` and \`spec conform\` LOUDLY warn that the port is DECORATIVE and nothing is checking it"
+# ---- 7. A REALISTIC PORT MUST CONFORM (#69) ------------------------------------------
+# The bug that made the whole check unusable, and slipped through because every fixture above
+# used a port with NO __init__ and NO TypedDict. A real .pyi has both: a constructor, and the
+# data shapes its signatures refer to. Two failures compounded:
+#   - a port declaring `__init__` could NEVER conform: the impl-side scan dropped ALL dunders, so
+#     `__init__` was reported MISSING against code whose first line is `def __init__`.
+#   - a `class Task(TypedDict)` in the port was treated as an interface the IMPLEMENTATION must
+#     redefine, rather than a type the port's signatures use.
+# Together: every realistic port failed conformance forever, which would train users to disable
+# the hook — restoring the decorative-port state #57 existed to end.
+SC="$CONF"
+RT="$TMP/realistic"; mkdir -p "$RT"
+cat > "$RT/store.pyi" <<'EOF'
+from typing import TypedDict
+class Task(TypedDict):
+    id: str
+    title: str
+    done: bool
+class Store:
+    def __init__(self) -> None: ...
+    def put(self, task: Task) -> str: ...
+    def get(self, id: str) -> Task | None: ...
+    def all(self) -> list[Task]: ...
+EOF
+cat > "$RT/store.py" <<'EOF'
+class Store:
+    def __init__(self): self._t = {}; self._o = []
+    def put(self, task):
+        tid = task.get("id") or str(len(self._o) + 1); task["id"] = tid
+        if tid not in self._t: self._o.append(tid)
+        self._t[tid] = task; return tid
+    def get(self, id): return self._t.get(id)
+    def all(self): return [self._t[i] for i in self._o]
+EOF
+python3 "$SC" "$RT/store.pyi" "$RT/store.py" >"$RT/out" 2>&1 \
+  || fail "a CONFORMING implementation of a REALISTIC port (with __init__ and a TypedDict) was REJECTED (#69). Output: $(cat "$RT/out")"
+grep -qi 'MISSING METHOD.*__init__' "$RT/out" 2>/dev/null \
+  && fail "the checker still reports __init__ MISSING against an impl that defines it (#69)"
+grep -qi 'MISSING CLASS.*Task' "$RT/out" 2>/dev/null \
+  && fail "the checker still demands the impl redefine the TypedDict \`Task\` (#69)"
+# And it must still CATCH a real drift on a realistic port (not merely pass everything).
+cat > "$RT/drift.py" <<'EOF'
+class Store:
+    def __init__(self): self._t = {}
+    def save(self, task): pass
+    def fetch(self, key): return None
+    def items(self): return []
+EOF
+python3 "$SC" "$RT/store.pyi" "$RT/drift.py" >/dev/null 2>&1 \
+  && fail "a DRIFTING impl of a realistic port passed conformance — the #69 fix over-corrected into always-pass"
+echo "    ok: a realistic port (with __init__ + a TypedDict) conforms when it should and is caught when it drifts (#69)"
+
+echo "PASS: a frozen port is no longer DECORATIVE — an implementation that DRIFTS from it (port: put/get/all; impl: add/get/complete/list, the artifact untouched and every graph proof green) is CAUGHT with exit 2, naming the port, the unit and the drift; a MISSING METHOD and a WRONG PARAMETER LIST are both caught; a CONFORMING implementation passes; a REALISTIC port with __init__ and a TypedDict conforms (#69); the check is a PRE-GATE that turns fleet_gate RED; the shipped stdlib spec-conform.py works standalone; and with NO fleet_spec_conform hook configured, BOTH \`spec check\` and \`spec conform\` LOUDLY warn that the port is DECORATIVE and nothing is checking it"
